@@ -91,10 +91,10 @@ func (r *PostgresOrderRepository) UpdateStatus(ctx context.Context, orderNo stri
 	return nil
 }
 
-// AdditionalUpdateStatus permite actualizar el estado junto con otros
+// UpdateStatusAndFields actualiza el estado junto con otros
 // campos (ej: payment_confirmed_at, pvs_qr_id, etc) en una sola query.
-// Se usa en el service layer cuando se necesita atomicidad.
-func (r *PostgresOrderRepository) AdditionalUpdateStatus(ctx context.Context, orderNo string,
+// Implementa ports.OrderRepository.UpdateStatusAndFields.
+func (r *PostgresOrderRepository) UpdateStatusAndFields(ctx context.Context, orderNo string,
 	status domain.OrderStatus, actualizaciones map[string]interface{}) error {
 
 	if len(actualizaciones) == 0 {
@@ -126,6 +126,54 @@ func (r *PostgresOrderRepository) AdditionalUpdateStatus(ctx context.Context, or
 	return nil
 }
 
+// UpdateStatusGuarded actualiza el estado SOLO si el estado actual
+// coincide con expectedStatus. Devuelve updated=false si otra
+// transaccion ya cambio el estado (condicion de carrera).
+func (r *PostgresOrderRepository) UpdateStatusGuarded(ctx context.Context,
+	orderNo string, expectedStatus, newStatus domain.OrderStatus) (bool, error) {
+
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE orders SET status = $1, updated_at = now()
+		 WHERE order_no = $2 AND status = $3`,
+		newStatus, orderNo, expectedStatus)
+	if err != nil {
+		return false, fmt.Errorf("update guarded %s: %w", orderNo, err)
+	}
+	n, _ := result.RowsAffected()
+	return n > 0, nil
+}
+
+// UpdateStatusGuardedAndFields es como UpdateStatusGuarded pero actualiza
+// campos adicionales en la misma operacion atomica.
+func (r *PostgresOrderRepository) UpdateStatusGuardedAndFields(ctx context.Context,
+	orderNo string, expectedStatus, newStatus domain.OrderStatus,
+	fields map[string]interface{}) (bool, error) {
+
+	if len(fields) == 0 {
+		return r.UpdateStatusGuarded(ctx, orderNo, expectedStatus, newStatus)
+	}
+
+	setParts := []string{"status = $1", "updated_at = now()"}
+	args := []interface{}{newStatus}
+	i := 2
+	for col, val := range fields {
+		setParts = append(setParts, fmt.Sprintf("%s = $%d", col, i))
+		args = append(args, val)
+		i++
+	}
+	args = append(args, orderNo, expectedStatus)
+
+	query := fmt.Sprintf("UPDATE orders SET %s WHERE order_no = $%d AND status = $%d",
+		joinString(setParts, ", "), i, i+1)
+
+	result, err := r.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return false, fmt.Errorf("update guarded+fields %s: %w", orderNo, err)
+	}
+	n, _ := result.RowsAffected()
+	return n > 0, nil
+}
+
 // GetStaleByStatus devuelve ordenes en un estado dado que no se
 // actualizaron desde 'desde'. Para el reconciler.
 func (r *PostgresOrderRepository) GetStaleByStatus(ctx context.Context,
@@ -152,42 +200,30 @@ func (r *PostgresOrderRepository) GetStaleByStatus(ctx context.Context,
 	return ordenes, rows.Err()
 }
 
+// FindRecentDup busca una orden duplicada reciente: mismo dispositivo,
+// producto y precio, creada dentro de la ventana since. Para deduplicacion.
+// Si no encuentra ninguna, devuelve ErrOrderNotFound (no es error de sistema).
+func (r *PostgresOrderRepository) FindRecentDup(ctx context.Context,
+	deviceID, objectID string, priceCents int64, since time.Time) (*domain.Order, error) {
+
+	query := `SELECT ` + columnasOrden + ` FROM orders
+		WHERE device_id = $1 AND object_id = $2 AND price_cents = $3
+		  AND created_at > $4
+		ORDER BY created_at DESC LIMIT 1`
+
+	o, err := r.escanearOrden(r.db.QueryRowContext(ctx, query, deviceID, objectID, priceCents, since))
+	if err != nil {
+		return nil, fmt.Errorf("buscando orden duplicada: %w", err)
+	}
+	return o, nil
+}
+
 // escanearOrden lee una fila de la base de datos y la mapea a domain.Order.
-// Maneja columnas NULL convirtiendolas a valores cero de Go.
+// Delega en scanOrderRow, que es compartido con PostgresReconcilerStore.
 func (r *PostgresOrderRepository) escanearOrden(scanner interface {
 	Scan(dest ...interface{}) error
 }) (*domain.Order, error) {
-
-	var (
-		o                        domain.Order
-		pvsQrID, qrGen, qrExp   sql.NullString
-		payConf, gsComp, gsCanc sql.NullString
-		refunded                 sql.NullString
-	)
-
-	err := scanner.Scan(
-		&o.OrderNo, &o.DeviceID, &o.DeviceNo, &o.ObjectID, &o.PriceCents,
-		&o.PayMethod, &o.WayCode, &o.Status, &o.GsOrderStatus, &o.PvsStatus,
-		&pvsQrID, &o.PvsQrImage,
-		&qrGen, &qrExp, &payConf, &gsComp, &gsCanc, &refunded,
-		&o.FailureReason, &o.CreatedAt, &o.UpdatedAt,
-	)
-	if err == sql.ErrNoRows {
-		return nil, domain.ErrOrderNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("escaneando orden: %w", err)
-	}
-
-	o.PvsQrID = pvsQrID.String
-	o.QrGeneratedAt = parseNullableTime(qrGen)
-	o.QrExpiresAt = parseNullableTime(qrExp)
-	o.PaymentConfirmedAt = parseNullableTime(payConf)
-	o.GsCompletedAt = parseNullableTime(gsComp)
-	o.GsCancelledAt = parseNullableTime(gsCanc)
-	o.RefundedAt = parseNullableTime(refunded)
-
-	return &o, nil
+	return scanOrderRow(scanner)
 }
 
 // Helpers

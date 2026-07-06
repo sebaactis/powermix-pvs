@@ -6,7 +6,7 @@
 
 ## 🎯 Objetivo
 
-Servicio Go 1.25.1 que actúa de **bridge** entre la máquina expendedora GSWYIT (GS) y el proveedor argentino de pagos QR (PVS). El cliente selecciona una bebida, la máquina genera un QR de pago a través de nuestro servicio, el cliente paga con su billetera, y la máquina dispensa automáticamente.
+Servicio Go que actúa de **bridge** entre la máquina expendedora GSWYIT (GS) y el proveedor argentino de pagos QR (PVS). El cliente selecciona una bebida, la máquina genera un QR de pago a través de nuestro servicio, el cliente paga con su billetera, y la máquina dispensa automáticamente.
 
 ---
 
@@ -14,13 +14,13 @@ Servicio Go 1.25.1 que actúa de **bridge** entre la máquina expendedora GSWYIT
 
 ```
     ┌─────────────────────┐
-    │  GS (GWYIT Machine) │  ←— POST /order/create, /order/query,
-    │  (China, Android)   │      /order/refund, /order/complete,
-    └──────────┬──────────┘      /order/cancel
-               │ HTTP (key-md5 signed)
+    │  GS (GWYIT Machine) │  ←— POST /api/v1/orders, /api/v1/orders/{orderNo}/query,
+    │  (China, Android)   │      /api/v1/orders/{orderNo}/refund,
+    └──────────┬──────────┘      /api/v1/orders/{orderNo}/complete,
+               │ HTTP (key-md5 signed)  /api/v1/orders/{orderNo}/cancel
     ┌──────────▼──────────┐
     │  vps-powermix (Go)  │  5 endpoints inbound + 1 PVS webhook
-    │                     │  + reconciler + sync log + healthz
+    │                     │  + reconciler + sync log + /healthz + /metrics
     └──────────┬──────────┘
                │ HTTP (OAuth2 Bearer)
     ┌──────────▼──────────┐
@@ -33,41 +33,46 @@ Servicio Go 1.25.1 que actúa de **bridge** entre la máquina expendedora GSWYIT
 
 ---
 
-## ✅ Estado de implementación
+## ✅ Estado de implementación — COMPLETADO
 
-### PR1 — Foundation (COMPLETO)
+### PR1 — Foundation ✅
 | Componente | Archivos | Tests | Estado |
 |---|---|---|---|
 | `internal/config/` | `config.go`, `config_test.go` | ✅ 5 (19 sub) | ✅ |
-| `internal/domain/` | `order.go`, `status.go`, `money.go`, `errors.go`, `refund.go`, `order_test.go` | ✅ 5 (33 sub) | ✅ |
-| `internal/ports/` | `repository.go`, `client_gs.go`, `client_pvs.go`, `health.go`, `ports_test.go` | ✅ 1 | ✅ |
-| `migrations/` | `001-003 up/down SQL`, `migration_test.go` | ✅ 1 (skip sin DB) | ✅ |
-| `internal/store/` | `order_repo.go`, `idempotency_store.go`, `sync_log_repo.go`, `store_test.go` | ✅ 6 (skip sin DB) | ✅ |
+| `internal/domain/` | `order.go`, `status.go`, `money.go`, `errors.go`, `refund.go`, `order_test.go`, `status_test.go` | ✅ | ✅ |
+| `internal/ports/` | `repository.go`, `client_gs.go`, `client_pvs.go`, `health.go`, `ports_test.go` | ✅ | ✅ |
+| `migrations/` | `001-005 up/down SQL`, `migration_test.go` | ✅ (skip sin DB) | ✅ |
+| `internal/store/` | `order_repo.go`, `idempotency_store.go`, `sync_log_repo.go`, `reconciler_store.go`, `refund_repo.go`, `scanning.go`, `store_test.go` | ✅ (skip sin DB) | ✅ |
 
-### PR2 — PVS Client (COMPLETO)
+### PR2 — PVS Client ✅
 | Componente | Archivos | Tests | Estado |
 |---|---|---|---|
 | `internal/client/pvs/` | `client.go`, `client_test.go` | ✅ 8 | ✅ |
 
-### PR3 — GS Client (COMPLETO)
+### PR3 — GS Client ✅
 | Componente | Archivos | Tests | Estado |
 |---|---|---|---|
 | `internal/client/gs/` | `client.go`, `client_test.go` | ✅ 6 | ✅ |
 
-### PR4 — Handlers + State Machine + Reconciler (PENDIENTE)
-- 5 handlers para GS: `POST /v1/gs/orders` (create), `POST /v1/gs/orders/{orderNo}/query`, `POST /v1/gs/orders/{orderNo}/refund`, `POST /v1/gs/orders/{orderNo}/complete`, `POST /v1/gs/orders/{orderNo}/cancel`
-- 1 handler para PVS webhook: `POST /v1/pvs/webhook`
-- Service layer con state machine (transición de estados, row-lock con FOR UPDATE, traducción qrImage→qrUrl)
-- Reconciler skeleton (goroutine + ticker, sin lógica de batch todavía)
-- Migraciones 004-005 (reconciler_runs + refunds)
+### PR4 — Handlers + State Machine + Reconciler ✅
+| Componente | Archivos | Tests | Estado |
+|---|---|---|---|
+| `internal/handler/` | `handler.go`, `metrics.go`, `redact.go`, `handler_test.go`, `e2e_test.go`, `security_test.go` | ✅ | ✅ |
+| `internal/service/` | `order_service.go`, `order_service_test.go`, `refund_service.go`, `refund_service_test.go` | ✅ | ✅ |
+| `internal/reconciler/` | `reconciler.go`, `reconciler_test.go` | ✅ | ✅ |
+| `cmd/server/` | `main.go` | — | ✅ |
+| `migrations/` | `004_refunds`, `005_reconciler_runs` | ✅ | ✅ |
 
-### PR5 — Observability + E2E + Load (PENDIENTE)
-- Reconciler loop completo (batch logic, stuck thresholds 180s/300s)
-- slog redaction Handler
-- Prometheus metrics (10 métricas)
-- `/healthz` con DB ping + clock drift
-- Golden-file HTTP tests
-- E2E con docker-compose + load test (vegeta/k6) + security audit
+### PR5 — Observability + E2E + Tests de Seguridad ✅
+| Componente | Detalle | Estado |
+|---|---|---|
+| Reconciler loop completo | Goroutine + ticker, batch de 200, stuck thresholds QR_SHOWN/REFUND_PENDING | ✅ |
+| `slog` redaction handler | `RedactingHandler` en `handler/redact.go` | ✅ |
+| Prometheus metrics | `http_requests_total`, `http_request_duration_seconds`, `pvs_calls_total`, `pvs_call_duration_seconds`, `reconciler_runs_total`, `reconciler_fixed_total` | ✅ |
+| `/healthz` | DB ping + respuesta structured JSON | ✅ |
+| `/metrics` | Endpoint Prometheus en handler/metrics.go | ✅ |
+| Tests E2E HTTP | `e2e_test.go`: flujo crear→pagar→completar, refund flow, cancel flow | ✅ |
+| Tests de seguridad | `security_test.go` | ✅ |
 
 ---
 
@@ -75,12 +80,12 @@ Servicio Go 1.25.1 que actúa de **bridge** entre la máquina expendedora GSWYIT
 
 | Capa | Tecnología |
 |---|---|
-| Lenguaje | **Go 1.25.1** |
+| Lenguaje | **Go** |
 | Base de datos | **PostgreSQL** (golang-migrate, sqlx + pgx v5) |
 | HTTP | `net/http` (Go 1.22+ ServeMux) |
 | OAuth2 cache | `golang.org/x/sync/singleflight` |
 | Rate limiter | `golang.org/x/time/rate` |
-| Logs | `log/slog` con Handler redaction |
+| Logs | `log/slog` con `RedactingHandler` |
 | Métricas | `prometheus/client_golang` |
 | Tests | `testing` + `httptest` (sin Docker para unit) |
 
@@ -105,23 +110,21 @@ Servicio Go 1.25.1 que actúa de **bridge** entre la máquina expendedora GSWYIT
 
 ```
 vps-powermix/
-├── cmd/server/          (pendiente PR4)
+├── cmd/server/          ✅ main.go — wiring completo
 ├── internal/
 │   ├── config/          ✅ Configuración por env vars
-│   ├── domain/          ✅ Entidades del negocio
+│   ├── domain/          ✅ Entidades del negocio + state machine
 │   ├── ports/           ✅ Interfaces (puertos)
 │   ├── client/
 │   │   ├── pvs/         ✅ Cliente HTTP PVS (OAuth2 + QR + reverse)
 │   │   └── gs/          ✅ Cliente HTTP GS (key-md5 + query + refund)
-│   ├── handler/         (pendiente PR4)
-│   ├── service/         (pendiente PR4)
-│   ├── reconciler/      (pendiente PR4+PR5)
-│   ├── observability/   (pendiente PR5)
+│   ├── handler/         ✅ HTTP handlers + middleware + metrics + redact
+│   ├── service/         ✅ Lógica de negocio + state machine
+│   ├── reconciler/      ✅ Worker background con batch logic
 │   └── store/           ✅ Implementaciones Postgres
-├── migrations/          ✅ 3 migraciones (orders, idempotency, sync_log)
+├── migrations/          ✅ 5 migraciones (orders, idempotency, sync_log, refunds, reconciler_runs)
 ├── docs/                📄 Documentación de análisis
-├── go.mod / go.sum      ✅ Dependencias
-└── Makefile             (pendiente)
+└── go.mod / go.sum      ✅ Dependencias
 ```
 
 ---
@@ -129,16 +132,20 @@ vps-powermix/
 ## 📊 Tests
 
 ```
-go test -count=1 ./internal/config/ ./internal/domain/ ./internal/ports/
-             ./internal/client/pvs/ ./internal/client/gs/
+go test ./...
 ```
 
-**Total: 22 tests, 0 fallos.** (6 tests de store/migrations skip sin Postgres local)
+| Paquete | Resultado |
+|---|---|
+| `internal/client/gs` | ✅ ok |
+| `internal/client/pvs` | ✅ ok |
+| `internal/config` | ✅ ok |
+| `internal/domain` | ✅ ok |
+| `internal/handler` | ✅ ok |
+| `internal/ports` | ✅ ok |
+| `internal/reconciler` | ✅ ok |
+| `internal/service` | ✅ ok |
+| `internal/store` | ✅ ok (skip sin Postgres) |
+| `migrations` | ✅ ok (skip sin Postgres) |
 
----
-
-## ⏳ Pendiente más inmediato (PR4)
-
-- **Endpoint GS `order complete`**: confirmar payload exacto con vendor (asumimos outStockStatus + outStockTime del DOCX)
-- **Endpoint GS `order cancel`**: confirmar payload + triggers con vendor
-- **Resolución OQ-1**: confirmar PVS OAuth2 form body con curl en sandbox (opcional, implementación asume standard)
+**10 paquetes, 0 fallos.**

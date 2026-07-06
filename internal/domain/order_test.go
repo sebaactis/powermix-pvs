@@ -22,6 +22,7 @@ func TestOrderStatusTransition(t *testing.T) {
 		{"qr_shown -> cancelled", OrderQRShown, OrderCancelled, true},
 		{"payment_confirmed -> done", OrderPaymentConfirmed, OrderDone, true},
 		{"payment_confirmed -> refund_pending", OrderPaymentConfirmed, OrderRefundPending, true},
+		{"done -> refund_pending", OrderDone, OrderRefundPending, true},
 		{"refund_pending -> refunded", OrderRefundPending, OrderRefunded, true},
 		{"refund_pending -> refund_failed", OrderRefundPending, OrderRefundFailed, true},
 		// Transiciones invalidas
@@ -50,7 +51,7 @@ func TestOrderStatusTransition(t *testing.T) {
 // correctamente que no pueden transicionar.
 func TestEstadosTerminales(t *testing.T) {
 	terminales := []OrderStatus{
-		OrderDone, OrderFailed, OrderTimeout,
+		OrderFailed, OrderTimeout,
 		OrderCancelled, OrderRefunded, OrderRefundFailed,
 	}
 
@@ -62,7 +63,7 @@ func TestEstadosTerminales(t *testing.T) {
 
 	noTerminales := []OrderStatus{
 		OrderReceived, OrderQRRequested, OrderQRShown,
-		OrderPaymentConfirmed, OrderRefundPending,
+		OrderPaymentConfirmed, OrderRefundPending, OrderDone,
 	}
 
 	for _, s := range noTerminales {

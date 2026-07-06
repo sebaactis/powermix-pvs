@@ -27,8 +27,24 @@ func (m *mockOrderRepo) GetByPVSQrID(_ context.Context, _ string) (*domain.Order
 func (m *mockOrderRepo) UpdateStatus(_ context.Context, _ string, _ domain.OrderStatus) error {
 	return nil
 }
+func (m *mockOrderRepo) UpdateStatusAndFields(_ context.Context, _ string, _ domain.OrderStatus, _ map[string]interface{}) error {
+	return nil
+}
+
 func (m *mockOrderRepo) GetStaleByStatus(_ context.Context, _ domain.OrderStatus, _ time.Time, _ int) ([]domain.Order, error) {
 	return nil, nil
+}
+
+func (m *mockOrderRepo) FindRecentDup(_ context.Context, _, _ string, _ int64, _ time.Time) (*domain.Order, error) {
+	return nil, domain.ErrOrderNotFound
+}
+
+func (m *mockOrderRepo) UpdateStatusGuarded(_ context.Context, _ string, _, _ domain.OrderStatus) (bool, error) {
+	return true, nil
+}
+
+func (m *mockOrderRepo) UpdateStatusGuardedAndFields(_ context.Context, _ string, _, _ domain.OrderStatus, _ map[string]interface{}) (bool, error) {
+	return true, nil
 }
 
 // ... similar mocks para las otras interfaces ...

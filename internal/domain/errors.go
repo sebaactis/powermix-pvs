@@ -15,4 +15,5 @@ var (
 	ErrPVSServiceError     = errors.New("error en el servicio de PVS")
 	ErrGSServiceError      = errors.New("error en el servicio de GS")
 	ErrIdempotencyViolation = errors.New("violacion de idempotencia")
+	ErrInvalidInput         = errors.New("entrada invalida")
 )

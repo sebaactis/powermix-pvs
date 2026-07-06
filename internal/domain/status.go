@@ -1,5 +1,7 @@
 package domain
 
+import "fmt"
+
 // OrderStatus representa el estado interno de una orden en nuestro
 // sistema. NO es el mismo que el status de GS (1-6) ni el de PVS
 // (stateId 6/5/4/3). Es nuestro propio state machine.
@@ -53,7 +55,7 @@ var transitionTable = map[OrderStatus][]OrderStatus{
 	OrderPaymentConfirmed: {OrderDone, OrderRefundPending, OrderFailed, OrderCancelled},
 	OrderRefundPending:    {OrderRefunded, OrderRefundFailed},
 	// Terminales: no pueden transicionar a ningun otro estado
-	OrderDone:       {},
+	OrderDone:       {OrderRefundPending}, // entregado pero reembolsable
 	OrderFailed:     {},
 	OrderTimeout:    {},
 	OrderCancelled:  {},
@@ -76,4 +78,43 @@ func (s OrderStatus) CanTransitionTo(nuevo OrderStatus) bool {
 // a ningun otro (es un estado final).
 func (s OrderStatus) EsEstadoTerminal() bool {
 	return len(transitionTable[s]) == 0
+}
+
+// ToGSStatus traduce nuestro estado interno al status 1-6 que entiende GS.
+// Se usa cuando GS hace polling de estado (seccion 2.3 del DOCX).
+func (s OrderStatus) ToGSStatus() GSOrderStatus {
+	switch s {
+	case OrderReceived, OrderQRRequested, OrderQRShown:
+		return GSPending // 1
+	case OrderPaymentConfirmed, OrderDone:
+		return GSPaid // 2
+	case OrderFailed, OrderCancelled:
+		return GSFailed // 3
+	case OrderRefundPending:
+		return GSPendingRefund // 4
+	case OrderRefunded, OrderRefundFailed:
+		return GSRefunded // 5
+	case OrderTimeout:
+		return GSTimeout // 6
+	default:
+		// Estado desconocido: fallback seguro (GS reintenta o cancela).
+		return GSFailed
+	}
+}
+
+// PVSStatusFromStateID mapea el stateId numerico de PVS (6/5/4/3) a PVSStatus.
+// stateId: 6=In Process, 5=Approved, 4=Reverse, 3=Rejected.
+func PVSStatusFromStateID(stateID int) (PVSStatus, error) {
+	switch stateID {
+	case 6:
+		return PVSInProcess, nil
+	case 5:
+		return PVSApproved, nil
+	case 4:
+		return PVSReversed, nil
+	case 3:
+		return PVSRejected, nil
+	default:
+		return "", fmt.Errorf("stateId desconocido: %d", stateID)
+	}
 }

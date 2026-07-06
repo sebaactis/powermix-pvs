@@ -25,10 +25,35 @@ type OrderRepository interface {
 	// Usa SELECT ... FOR UPDATE si se pasa una transaccion explicita.
 	UpdateStatus(ctx context.Context, orderNo string, status domain.OrderStatus) error
 
+	// UpdateStatusAndFields actualiza el estado y campos adicionales
+	// en una sola operacion atomica. Para cuando hay que actualizar
+	// estado + qr_id + qr_image + timestamps juntos.
+	UpdateStatusAndFields(ctx context.Context, orderNo string,
+		status domain.OrderStatus, fields map[string]interface{}) error
+
 	// GetStaleByStatus devuelve ordenes en un estado dado que llevan
 	// mas de since sin cambios. Para el reconciler.
 	GetStaleByStatus(ctx context.Context, status domain.OrderStatus,
 		since time.Time, limit int) ([]domain.Order, error)
+
+	// FindRecentDup busca una orden duplicada reciente (mismo dispositivo +
+	// producto + precio) creada dentro de la ventana since. Para dedup.
+	// Si no encuentra, devuelve ErrOrderNotFound.
+	FindRecentDup(ctx context.Context, deviceID, objectID string,
+		priceCents int64, since time.Time) (*domain.Order, error)
+
+	// UpdateStatusGuarded actualiza el estado SOLO si el estado actual
+	// coincide con expectedStatus. Devuelve updated=false si el estado
+	// ya cambio (otra transaccion gano la carrera).
+	// Es la proteccion contra races entre webhook y reconciler.
+	UpdateStatusGuarded(ctx context.Context, orderNo string,
+		expectedStatus, newStatus domain.OrderStatus) (updated bool, err error)
+
+	// UpdateStatusGuardedAndFields es como UpdateStatusGuarded pero ademas
+	// actualiza campos adicionales en la misma operacion atomica.
+	UpdateStatusGuardedAndFields(ctx context.Context, orderNo string,
+		expectedStatus, newStatus domain.OrderStatus,
+		fields map[string]interface{}) (updated bool, err error)
 }
 
 // RefundRepository: acceso a la tabla de reembolsos.

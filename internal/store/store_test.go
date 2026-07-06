@@ -98,7 +98,7 @@ func TestPostgresOrderRepository_GetByPVSQrID(t *testing.T) {
 	orden := crearOrdenTest(t, repo, ctx)
 
 	// Actualizar con QR ID
-	err := repo.AdditionalUpdateStatus(ctx, orden.OrderNo, domain.OrderQRShown,
+	err := repo.UpdateStatusAndFields(ctx, orden.OrderNo, domain.OrderQRShown,
 		map[string]interface{}{"pvs_qr_id": "pvs-qr-test-123"})
 	if err != nil {
 		t.Fatalf("error actualizando QR: %v", err)
@@ -189,6 +189,96 @@ func TestPostgresSyncLogRepo_InsertBestEffort(t *testing.T) {
 	}
 }
 
+// TestPostgresRefundRepository_CreateEGetByRefundNo verifica que se puede
+// crear un reembolso y recuperarlo por su refund_no.
+func TestPostgresRefundRepository_CreateEGetByRefundNo(t *testing.T) {
+	db := conectarDB(t)
+	defer db.Close()
+
+	repo := NewPostgresRefundRepository(db)
+	ctx := context.Background()
+
+	rf := &domain.Refund{
+		RefundNo:   "test-refund-001",
+		OrderNo:    "test-order-001",
+		PriceCents: 15000,
+		Motivo:     "test",
+		Status:     domain.RefundPending,
+	}
+
+	err := repo.Create(ctx, rf)
+	if err != nil {
+		t.Fatalf("error creando reembolso: %v", err)
+	}
+
+	if rf.ID == 0 {
+		t.Error("ID no fue asignado")
+	}
+	if rf.RequestedAt.IsZero() {
+		t.Error("RequestedAt no fue asignado")
+	}
+
+	recuperado, err := repo.GetByRefundNo(ctx, rf.RefundNo)
+	if err != nil {
+		t.Fatalf("error recuperando reembolso: %v", err)
+	}
+
+	if recuperado.RefundNo != rf.RefundNo {
+		t.Errorf("RefundNo = %q, esperaba %q", recuperado.RefundNo, rf.RefundNo)
+	}
+	if recuperado.Status != domain.RefundPending {
+		t.Errorf("Status = %q, esperaba PENDING", recuperado.Status)
+	}
+}
+
+// TestPostgresRefundRepository_UpdateStatus verifica que se puede
+// actualizar el estado de un reembolso.
+func TestPostgresRefundRepository_UpdateStatus(t *testing.T) {
+	db := conectarDB(t)
+	defer db.Close()
+
+	repo := NewPostgresRefundRepository(db)
+	ctx := context.Background()
+
+	rf := &domain.Refund{
+		RefundNo:   "test-refund-002",
+		OrderNo:    "test-order-002",
+		PriceCents: 10000,
+		Status:     domain.RefundPending,
+	}
+	if err := repo.Create(ctx, rf); err != nil {
+		t.Fatalf("error creando reembolso: %v", err)
+	}
+
+	err := repo.UpdateStatus(ctx, rf.RefundNo, domain.RefundSuccess)
+	if err != nil {
+		t.Fatalf("error actualizando estado: %v", err)
+	}
+
+	recuperado, err := repo.GetByRefundNo(ctx, rf.RefundNo)
+	if err != nil {
+		t.Fatalf("error recuperando reembolso: %v", err)
+	}
+	if recuperado.Status != domain.RefundSuccess {
+		t.Errorf("Status = %q, esperaba SUCCESS", recuperado.Status)
+	}
+}
+
+// TestPostgresRefundRepository_NotFound verifica que GetByRefundNo
+// devuelve ErrRefundNotFound para reembolsos inexistentes.
+func TestPostgresRefundRepository_NotFound(t *testing.T) {
+	db := conectarDB(t)
+	defer db.Close()
+
+	repo := NewPostgresRefundRepository(db)
+	_, err := repo.GetByRefundNo(context.Background(), "no-existe")
+	if err != domain.ErrRefundNotFound {
+		t.Errorf("error = %v, esperaba ErrRefundNotFound", err)
+	}
+}
+
+// --- Servicio ---
+
 // Helpers
 
 // conectarDB se conecta a la base de datos de prueba.
@@ -211,6 +301,7 @@ func conectarDB(t *testing.T) *sqlx.DB {
 		"../../migrations/001_orders.up.sql",
 		"../../migrations/002_idempotency_keys.up.sql",
 		"../../migrations/003_api_sync_log.up.sql",
+		"../../migrations/004_refunds.up.sql",
 	}
 	for _, m := range migrar {
 		sql, err := os.ReadFile(m)

@@ -31,6 +31,9 @@ func TestMigrationsAplicanCorrectamente(t *testing.T) {
 		{"001_orders", "./001_orders.up.sql"},
 		{"002_idempotency_keys", "./002_idempotency_keys.up.sql"},
 		{"003_api_sync_log", "./003_api_sync_log.up.sql"},
+		{"004_refunds", "./004_refunds.up.sql"},
+		{"005_reconciler_runs", "./005_reconciler_runs.up.sql"},
+		{"006_order_status_history", "./006_order_status_history.up.sql"},
 	}
 
 	for _, m := range migrations {
@@ -50,13 +53,20 @@ func TestMigrationsAplicanCorrectamente(t *testing.T) {
 	// Verificar que las tablas existen
 	var tablas []string
 	err = db.Select(&tablas, `SELECT table_name FROM information_schema.tables 
-		WHERE table_schema = 'public' AND table_name IN ('orders', 'idempotency_keys', 'api_sync_log') 
+		WHERE table_schema = 'public' AND table_name IN ('orders', 'idempotency_keys', 'api_sync_log', 'refunds', 'reconciler_runs', 'order_status_history') 
 		ORDER BY table_name`)
 	if err != nil {
 		t.Fatalf("error consultando tablas: %v", err)
 	}
 
-	tablasEsperadas := map[string]bool{"orders": false, "idempotency_keys": false, "api_sync_log": false}
+	tablasEsperadas := map[string]bool{
+		"orders":               false,
+		"idempotency_keys":     false,
+		"api_sync_log":         false,
+		"refunds":              false,
+		"reconciler_runs":      false,
+		"order_status_history": false,
+	}
 	for _, t := range tablas {
 		tablasEsperadas[t] = true
 	}
@@ -71,6 +81,9 @@ func TestMigrationsAplicanCorrectamente(t *testing.T) {
 		nombre string
 		sql    string
 	}{
+		{"006_order_status_history", "./006_order_status_history.down.sql"},
+		{"005_reconciler_runs", "./005_reconciler_runs.down.sql"},
+		{"004_refunds", "./004_refunds.down.sql"},
 		{"003_api_sync_log", "./003_api_sync_log.down.sql"},
 		{"002_idempotency_keys", "./002_idempotency_keys.down.sql"},
 		{"001_orders", "./001_orders.down.sql"},

@@ -1,0 +1,321 @@
+{
+	"info": {
+		"_postman_id": "7fa72605-cb41-477d-9447-1f48fa134d19",
+		"name": "vps-powermix (Bridge GS-PVS)",
+		"description": "Colección de requests de Postman para simular los flujos de la máquina expendedora GSWYIT (GS), los webhooks de PVS, y endpoints administrativos del mock local.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "GS API Simulation",
+			"item": [
+				{
+					"name": "1. Crear Orden (GS -> Bridge)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"const response = pm.response.json();",
+									"if (response.thirdOrderNo) {",
+									"    pm.environment.set(\"thirdOrderNo\", response.thirdOrderNo);",
+									"    pm.environment.set(\"qrId\", \"qr-\" + response.thirdOrderNo);",
+									"    console.log(\"Variables de entorno actualizadas:\", {",
+									"        thirdOrderNo: response.thirdOrderNo,",
+									"        qrId: \"qr-\" + response.thirdOrderNo",
+									"    });",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"objectId\": \"drink-001\",\n    \"subject\": \"Coca Cola 500ml\",\n    \"totalAmount\": \"150.00\",\n    \"deviceId\": \"gs-device-001\",\n    \"deviceNo\": \"serial-abc-123\",\n    \"payMethod\": \"wxpay\",\n    \"wayCode\": \"qr\"\n}"
+						},
+						"url": {
+							"raw": "http://localhost:8080/api/v1/orders",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8080",
+							"path": [
+								"api",
+								"v1",
+								"orders"
+							]
+						},
+						"description": "Simula que la máquina GS crea una orden cuando un cliente selecciona un producto. La respuesta de este request almacena automáticamente en el entorno de Postman las variables `thirdOrderNo` y `qrId` para facilitar los siguientes pasos."
+					},
+					"response": []
+				},
+				{
+					"name": "2. Polling de Estado (GS -> Bridge)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://localhost:8080/api/v1/orders/{{thirdOrderNo}}",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8080",
+							"path": [
+								"api",
+								"v1",
+								"orders",
+								"{{thirdOrderNo}}"
+							]
+						},
+						"description": "Simula el polling que la máquina expendedora hace de forma repetitiva para saber si la orden fue pagada. El campo `orderStatus` en la respuesta representa el estado traducido para GS (2 = PAYMENT_CONFIRMED/APPROVED)."
+					},
+					"response": []
+				},
+				{
+					"name": "3. Confirmar Entrega (GS -> Bridge)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://localhost:8080/api/v1/orders/{{thirdOrderNo}}/complete",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8080",
+							"path": [
+								"api",
+								"v1",
+								"orders",
+								"{{thirdOrderNo}}",
+								"complete"
+							]
+						},
+						"description": "Simula que la máquina informa que el producto fue entregado físicamente con éxito, finalizando el ciclo interno de la orden."
+					},
+					"response": []
+				},
+				{
+					"name": "4. Cancelar Orden (GS -> Bridge)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "http://localhost:8080/api/v1/orders/{{thirdOrderNo}}/cancel",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8080",
+							"path": [
+								"api",
+								"v1",
+								"orders",
+								"{{thirdOrderNo}}",
+								"cancel"
+							]
+						},
+						"description": "Simula la cancelación voluntaria (el cliente cancela en la pantalla de la máquina antes de pagar)."
+					},
+					"response": []
+				},
+				{
+					"name": "5. Solicitar Reembolso (GS -> Bridge)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"refundNo\": \"ref-{{thirdOrderNo}}\",\n    \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n    \"refundAmount\": \"150.00\",\n    \"refundReason\": \"Bebida trabada en la espiral\"\n}"
+						},
+						"url": {
+							"raw": "http://localhost:8080/api/v1/orders/{{thirdOrderNo}}/refund",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8080",
+							"path": [
+								"api",
+								"v1",
+								"orders",
+								"{{thirdOrderNo}}",
+								"refund"
+							]
+						},
+						"description": "Simula que la máquina solicita un reembolso tras una falla al dispensar la bebida que ya fue cobrada. Invoca al mock de PVS en background."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "PVS Webhooks Simulation",
+			"item": [
+				{
+					"name": "1. Simular Pago Webhook (PVS -> Bridge)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"qrId\": \"{{qrId}}\",\n    \"stateId\": 5\n}"
+						},
+						"url": {
+							"raw": "http://localhost:8080/webhook/pvs",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8080",
+							"path": [
+								"webhook",
+								"pvs"
+							]
+						},
+						"description": "Simula que PVS llama a nuestro webhook de notificación de pagos cuando el cliente abona (`stateId: 5 = Approved`)."
+					},
+					"response": []
+				},
+				{
+					"name": "2. Simular Reverso Confirmado Webhook (PVS -> Bridge)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"qrId\": \"{{qrId}}\",\n    \"stateId\": 4\n}"
+						},
+						"url": {
+							"raw": "http://localhost:8080/webhook/pvs",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8080",
+							"path": [
+								"webhook",
+								"pvs"
+							]
+						},
+						"description": "Simula que PVS llama a nuestro webhook para confirmar la reversión de un pago (`stateId: 4 = Reversed`)."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "PVS Mock Admin Controls",
+			"item": [
+				{
+					"name": "Forzar Estado en PVS (Simular reconciliación)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"stateId\": 5\n}"
+						},
+						"url": {
+							"raw": "http://localhost:8081/admin/transactions/{{qrId}}/status",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8081",
+							"path": [
+								"admin",
+								"transactions",
+								"{{qrId}}",
+								"status"
+							]
+						},
+						"description": "Actualiza el estado de la transacción en memoria dentro de Mock PVS. Sirve para simular que un pago fue aprobado en PVS pero el webhook de pago se perdió en la red. El reconciliador de fondo del Bridge detectará este estado mediante consulta periódica y lo actualizará automáticamente."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Diagnostics",
+			"item": [
+				{
+					"name": "Healthcheck",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://localhost:8080/healthz",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8080",
+							"path": [
+								"healthz"
+							]
+						},
+						"description": "Verificación de salud simple del bridge (valida latencias y pings contra la DB PostgreSQL)."
+					},
+					"response": []
+				},
+				{
+					"name": "Prometheus Metrics",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "http://localhost:8080/metrics",
+							"protocol": "http",
+							"host": [
+								"localhost"
+							],
+							"port": "8080",
+							"path": [
+								"metrics"
+							]
+						},
+						"description": "Expone las métricas recolectadas por Prometheus (tiempos de respuesta, volumen de peticiones y estadísticas del reconciliador)."
+					},
+					"response": []
+				}
+			]
+		}
+	]
+}
