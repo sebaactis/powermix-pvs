@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/seba/vps-powermix/internal/domain"
 )
@@ -28,8 +29,34 @@ func (m *mockRefundRepo) Create(_ context.Context, r *domain.Refund) error {
 func (m *mockRefundRepo) GetByRefundNo(_ context.Context, refundNo string) (*domain.Refund, error) {
 	if m.byRefundNo != nil {
 		if r, ok := m.byRefundNo[refundNo]; ok {
-			r.Status = m.status
-			return r, nil
+			cp := *r
+			cp.Status = m.status
+			return &cp, nil
+		}
+	}
+	return nil, domain.ErrRefundNotFound
+}
+
+func (m *mockRefundRepo) GetLatestByThirdOrderNo(_ context.Context, thirdOrderNo string) (*domain.Refund, error) {
+	if m.created != nil && m.created.ThirdOrderNo == thirdOrderNo {
+		cp := *m.created
+		cp.Status = m.status
+		return &cp, nil
+	}
+	if m.byRefundNo != nil {
+		var latest *domain.Refund
+		for _, r := range m.byRefundNo {
+			if r.ThirdOrderNo != thirdOrderNo {
+				continue
+			}
+			if latest == nil || r.CreatedAt.After(latest.CreatedAt) {
+				cp := *r
+				latest = &cp
+			}
+		}
+		if latest != nil {
+			latest.Status = m.status
+			return latest, nil
 		}
 	}
 	return nil, domain.ErrRefundNotFound
@@ -52,13 +79,11 @@ func TestRefund_HappyPath(t *testing.T) {
 	refundRepo := &mockRefundRepo{}
 	syncLog := &mockSyncLogRepo{}
 
-	orderSvc := NewOrderService(orderRepo, pvs, syncLog)
+	orderSvc := NewOrderService(orderRepo, pvs, syncLog, nil)
 	refundSvc := NewRefundService(orderRepo, pvs, refundRepo, syncLog)
 
 	// Crear orden y pagarla
-	created, err := orderSvc.CreateOrder(context.Background(), &CreateOrderRequest{
-		ObjectID: "drink-test", TotalAmount: "100.00", DeviceID: "dev-1",
-	})
+	created, err := orderSvc.CreateOrder(context.Background(), validCreateReq())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,6 +96,7 @@ func TestRefund_HappyPath(t *testing.T) {
 	// Solicitar reembolso
 	resp, err := refundSvc.Refund(context.Background(), &RefundRequest{
 		RefundNo:     "refund-001",
+		OrderNo:      "GS-ORDER-001",
 		ThirdOrderNo: created.ThirdOrderNo,
 		Amount:       "100.00",
 		Reason:       "Cliente se arrepintio",
@@ -78,8 +104,8 @@ func TestRefund_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Refund fallo: %v", err)
 	}
-	if resp.RefundStatus != "success" {
-		t.Errorf("RefundStatus = %q, esperaba success", resp.RefundStatus)
+	if resp.RefundStatus != "waiting" {
+		t.Errorf("RefundStatus = %q, esperaba waiting", resp.RefundStatus)
 	}
 
 	// Orden debe estar en REFUND_PENDING
@@ -90,7 +116,7 @@ func TestRefund_HappyPath(t *testing.T) {
 	if refundRepo.status != domain.RefundSuccess {
 		t.Errorf("refund status = %q, esperaba SUCCESS", refundRepo.status)
 	}
-	if refundRepo.created == nil || refundRepo.created.OrderNo != created.ThirdOrderNo {
+	if refundRepo.created == nil || refundRepo.created.ThirdOrderNo != created.ThirdOrderNo {
 		t.Error("no se creo el reembolso correctamente")
 	}
 }
@@ -102,20 +128,22 @@ func TestRefund_DoneReembolsable(t *testing.T) {
 	refundRepo := &mockRefundRepo{}
 	syncLog := &mockSyncLogRepo{}
 
-	orderSvc := NewOrderService(orderRepo, pvs, syncLog)
+	orderSvc := NewOrderService(orderRepo, pvs, syncLog, nil)
 	refundSvc := NewRefundService(orderRepo, pvs, refundRepo, syncLog)
 
-	created, _ := orderSvc.CreateOrder(context.Background(), &CreateOrderRequest{
-		ObjectID: "drink-test", TotalAmount: "100.00", DeviceID: "dev-1",
-	})
+	created, _ := orderSvc.CreateOrder(context.Background(), validCreateReq())
 	_ = orderSvc.HandlePVSWebhook(context.Background(), &PVSWebhookRequest{
 		QrID: "qr_test_123", StateID: 5,
 	})
-	_ = orderSvc.CompleteOrder(context.Background(), created.ThirdOrderNo)
+	_, _ = orderSvc.CompleteOrder(context.Background(), &CompleteOrderRequest{
+		OrderNo: "GS-ORDER-001", ThirdOrderNo: created.ThirdOrderNo,
+		Success: true, OrderStatus: "2", OutStockStatus: 2,
+	})
 
 	// Orden esta en DONE, debe poder reembolsarse
 	_, err := refundSvc.Refund(context.Background(), &RefundRequest{
 		RefundNo:     "refund-002",
+		OrderNo:      "GS-ORDER-001",
 		ThirdOrderNo: created.ThirdOrderNo,
 		Amount:       "100.00",
 	})
@@ -134,18 +162,16 @@ func TestRefund_PVSErrorDeRed(t *testing.T) {
 	refundRepo := &mockRefundRepo{}
 	syncLog := &mockSyncLogRepo{}
 
-	orderSvc := NewOrderService(orderRepo, pvs, syncLog)
+	orderSvc := NewOrderService(orderRepo, pvs, syncLog, nil)
 	refundSvc := NewRefundService(orderRepo, pvs, refundRepo, syncLog)
 
-	created, _ := orderSvc.CreateOrder(context.Background(), &CreateOrderRequest{
-		ObjectID: "drink-test", TotalAmount: "100.00", DeviceID: "dev-1",
-	})
+	created, _ := orderSvc.CreateOrder(context.Background(), validCreateReq())
 	_ = orderSvc.HandlePVSWebhook(context.Background(), &PVSWebhookRequest{
 		QrID: "qr_test_123", StateID: 5,
 	})
 
 	_, err := refundSvc.Refund(context.Background(), &RefundRequest{
-		RefundNo: "refund-003", ThirdOrderNo: created.ThirdOrderNo, Amount: "100.00",
+		RefundNo: "refund-003", OrderNo: "GS-ORDER-001", ThirdOrderNo: created.ThirdOrderNo, Amount: "100.00",
 	})
 	if err == nil {
 		t.Fatal("se esperaba error de PVS Reverse")
@@ -165,18 +191,16 @@ func TestRefund_PVSRechaza(t *testing.T) {
 	refundRepo := &mockRefundRepo{}
 	syncLog := &mockSyncLogRepo{}
 
-	orderSvc := NewOrderService(orderRepo, pvs, syncLog)
+	orderSvc := NewOrderService(orderRepo, pvs, syncLog, nil)
 	refundSvc := NewRefundService(orderRepo, pvs, refundRepo, syncLog)
 
-	created, _ := orderSvc.CreateOrder(context.Background(), &CreateOrderRequest{
-		ObjectID: "drink-test", TotalAmount: "100.00", DeviceID: "dev-1",
-	})
+	created, _ := orderSvc.CreateOrder(context.Background(), validCreateReq())
 	_ = orderSvc.HandlePVSWebhook(context.Background(), &PVSWebhookRequest{
 		QrID: "qr_test_123", StateID: 5,
 	})
 
 	resp, err := refundSvc.Refund(context.Background(), &RefundRequest{
-		RefundNo: "refund-004", ThirdOrderNo: created.ThirdOrderNo, Amount: "100.00",
+		RefundNo: "refund-004", OrderNo: "GS-ORDER-001", ThirdOrderNo: created.ThirdOrderNo, Amount: "100.00",
 	})
 	if err != nil {
 		t.Fatalf("PVS rechazo no deberia ser error de sistema: %v", err)
@@ -199,19 +223,17 @@ func TestRefund_Idempotencia(t *testing.T) {
 	refundRepo := &mockRefundRepo{}
 	syncLog := &mockSyncLogRepo{}
 
-	orderSvc := NewOrderService(orderRepo, pvs, syncLog)
+	orderSvc := NewOrderService(orderRepo, pvs, syncLog, nil)
 	refundSvc := NewRefundService(orderRepo, pvs, refundRepo, syncLog)
 
-	created, _ := orderSvc.CreateOrder(context.Background(), &CreateOrderRequest{
-		ObjectID: "drink-test", TotalAmount: "100.00", DeviceID: "dev-1",
-	})
+	created, _ := orderSvc.CreateOrder(context.Background(), validCreateReq())
 	_ = orderSvc.HandlePVSWebhook(context.Background(), &PVSWebhookRequest{
 		QrID: "qr_test_123", StateID: 5,
 	})
 
 	// Primer llamado
 	resp1, err := refundSvc.Refund(context.Background(), &RefundRequest{
-		RefundNo: "refund-005", ThirdOrderNo: created.ThirdOrderNo, Amount: "100.00",
+		RefundNo: "refund-005", OrderNo: "GS-ORDER-001", ThirdOrderNo: created.ThirdOrderNo, Amount: "100.00",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -220,7 +242,7 @@ func TestRefund_Idempotencia(t *testing.T) {
 
 	// Segundo llamado con mismo refundNo
 	resp2, err := refundSvc.Refund(context.Background(), &RefundRequest{
-		RefundNo: "refund-005", ThirdOrderNo: created.ThirdOrderNo, Amount: "100.00",
+		RefundNo: "refund-005", OrderNo: "GS-ORDER-001", ThirdOrderNo: created.ThirdOrderNo, Amount: "100.00",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -241,16 +263,14 @@ func TestRefund_OrdenNoReembolsable(t *testing.T) {
 	refundRepo := &mockRefundRepo{}
 	syncLog := &mockSyncLogRepo{}
 
-	orderSvc := NewOrderService(orderRepo, pvs, syncLog)
+	orderSvc := NewOrderService(orderRepo, pvs, syncLog, nil)
 	refundSvc := NewRefundService(orderRepo, pvs, refundRepo, syncLog)
 
-	created, _ := orderSvc.CreateOrder(context.Background(), &CreateOrderRequest{
-		ObjectID: "drink-test", TotalAmount: "100.00", DeviceID: "dev-1",
-	})
+	created, _ := orderSvc.CreateOrder(context.Background(), validCreateReq())
 	// Orden en QR_SHOWN, no se puede reembolsar
 
 	_, err := refundSvc.Refund(context.Background(), &RefundRequest{
-		RefundNo: "refund-006", ThirdOrderNo: created.ThirdOrderNo, Amount: "100.00",
+		RefundNo: "refund-006", OrderNo: "GS-ORDER-001", ThirdOrderNo: created.ThirdOrderNo, Amount: "100.00",
 	})
 	if err != domain.ErrOrderNotRefundable {
 		t.Errorf("error = %v, esperaba ErrOrderNotRefundable", err)
@@ -283,7 +303,7 @@ func TestRefund_ValidacionThirdOrderNoVacio(t *testing.T) {
 func TestRefund_OrdenInexistente(t *testing.T) {
 	svc := NewRefundService(&mockOrderRepo{}, &mockPVSClient{}, &mockRefundRepo{}, &mockSyncLogRepo{})
 	_, err := svc.Refund(context.Background(), &RefundRequest{
-		RefundNo: "refund-008", ThirdOrderNo: "no-existe", Amount: "100.00",
+		RefundNo: "refund-008", OrderNo: "GS-X", ThirdOrderNo: "no-existe", Amount: "100.00",
 	})
 	if err == nil {
 		t.Fatal("se esperaba error por orden inexistente")
@@ -298,11 +318,9 @@ func TestRefund_WebhookConfirmacion(t *testing.T) {
 	refundRepo := &mockRefundRepo{}
 	syncLog := &mockSyncLogRepo{}
 
-	orderSvc := NewOrderService(orderRepo, pvs, syncLog)
+	orderSvc := NewOrderService(orderRepo, pvs, syncLog, nil)
 
-	created, _ := orderSvc.CreateOrder(context.Background(), &CreateOrderRequest{
-		ObjectID: "drink-test", TotalAmount: "100.00", DeviceID: "dev-1",
-	})
+	created, _ := orderSvc.CreateOrder(context.Background(), validCreateReq())
 	_ = orderSvc.HandlePVSWebhook(context.Background(), &PVSWebhookRequest{
 		QrID: "qr_test_123", StateID: 5,
 	})
@@ -310,7 +328,7 @@ func TestRefund_WebhookConfirmacion(t *testing.T) {
 	// Hacer Refund -> REFUND_PENDING
 	refundSvc := NewRefundService(orderRepo, pvs, refundRepo, syncLog)
 	_, _ = refundSvc.Refund(context.Background(), &RefundRequest{
-		RefundNo: "refund-009", ThirdOrderNo: created.ThirdOrderNo, Amount: "100.00",
+		RefundNo: "refund-009", OrderNo: "GS-ORDER-001", ThirdOrderNo: created.ThirdOrderNo, Amount: "100.00",
 	})
 
 	if orderRepo.statusActual != domain.OrderRefundPending {
@@ -340,12 +358,10 @@ func TestRefund_WebhookReverseEspontaneo(t *testing.T) {
 	pvs := &mockPVSClient{}
 	syncLog := &mockSyncLogRepo{}
 
-	orderSvc := NewOrderService(orderRepo, pvs, syncLog)
+	orderSvc := NewOrderService(orderRepo, pvs, syncLog, nil)
 
 	// No nos interesa el orderNo aca, solo el flujo
-	_, _ = orderSvc.CreateOrder(context.Background(), &CreateOrderRequest{
-		ObjectID: "drink-test", TotalAmount: "100.00", DeviceID: "dev-1",
-	})
+	_, _ = orderSvc.CreateOrder(context.Background(), validCreateReq())
 	_ = orderSvc.HandlePVSWebhook(context.Background(), &PVSWebhookRequest{
 		QrID: "qr_test_123", StateID: 5,
 	})
@@ -361,5 +377,291 @@ func TestRefund_WebhookReverseEspontaneo(t *testing.T) {
 	if orderRepo.statusActual != domain.OrderRefundPending {
 		t.Errorf("order status = %q, esperaba REFUND_PENDING (reversa espontanea)",
 			orderRepo.statusActual)
+	}
+}
+
+// AT-10: refund despues de FAILED-with-pay (payment_confirmed_at seteado) → permitido.
+func TestRefund_AfterFailedWithPay(t *testing.T) {
+	orderRepo := &mockOrderRepo{
+		creada: &domain.Order{
+			ThirdOrderNo:       "T-FAIL",
+			GsOrderNo:          "GS-FAIL",
+			PvsQrID:            "qr-fail",
+			Status:             domain.OrderFailed,
+			PaymentConfirmedAt: time.Now(), // pago confirmado antes de fallar
+			PriceCents:         10000,
+		},
+		statusActual: domain.OrderFailed,
+	}
+	pvs := &mockPVSClient{}
+	refundRepo := &mockRefundRepo{}
+	syncLog := &mockSyncLogRepo{}
+
+	refundSvc := NewRefundService(orderRepo, pvs, refundRepo, syncLog)
+	resp, err := refundSvc.Refund(context.Background(), &RefundRequest{
+		RefundNo:     "refund-fail",
+		OrderNo:      "GS-FAIL",
+		ThirdOrderNo: "T-FAIL",
+		Amount:       "100.00",
+	})
+	if err != nil {
+		t.Fatalf("refund despues de FAILED-with-pay debia permitirse: %v", err)
+	}
+	if resp.RefundStatus != "waiting" {
+		t.Errorf("RefundStatus = %q, esperaba waiting", resp.RefundStatus)
+	}
+	if orderRepo.statusActual != domain.OrderRefundPending {
+		t.Errorf("order status = %q, esperaba REFUND_PENDING", orderRepo.statusActual)
+	}
+}
+
+// Refund sin payment_confirmed_at → rechazado (no hubo pago real).
+func TestRefund_NoPaymentConfirmed_Rejected(t *testing.T) {
+	orderRepo := &mockOrderRepo{
+		creada: &domain.Order{
+			ThirdOrderNo:       "T-NOPAY",
+			GsOrderNo:          "GS-NOPAY",
+			PvsQrID:            "qr-nopay",
+			Status:             domain.OrderPaymentConfirmed,
+			PaymentConfirmedAt: time.Time{}, // zero: nunca se confirmo pago real
+			PriceCents:         10000,
+		},
+		statusActual: domain.OrderPaymentConfirmed,
+	}
+	refundSvc := NewRefundService(orderRepo, &mockPVSClient{}, &mockRefundRepo{}, &mockSyncLogRepo{})
+	_, err := refundSvc.Refund(context.Background(), &RefundRequest{
+		RefundNo:     "refund-nopay",
+		OrderNo:      "GS-NOPAY",
+		ThirdOrderNo: "T-NOPAY",
+		Amount:       "100.00",
+	})
+	if err != domain.ErrOrderNotRefundable {
+		t.Errorf("error = %v, esperaba ErrOrderNotRefundable", err)
+	}
+}
+
+// Pair mismatch: req.OrderNo != orden.GsOrderNo → ErrInvalidInput.
+func TestRefund_PairMismatch(t *testing.T) {
+	orderRepo := &mockOrderRepo{
+		creada: &domain.Order{
+			ThirdOrderNo:       "T-PAIR",
+			GsOrderNo:          "GS-REAL",
+			PvsQrID:            "qr-pair",
+			Status:             domain.OrderPaymentConfirmed,
+			PaymentConfirmedAt: time.Now(),
+			PriceCents:         10000,
+		},
+		statusActual: domain.OrderPaymentConfirmed,
+	}
+	refundSvc := NewRefundService(orderRepo, &mockPVSClient{}, &mockRefundRepo{}, &mockSyncLogRepo{})
+	_, err := refundSvc.Refund(context.Background(), &RefundRequest{
+		RefundNo:     "refund-pair",
+		OrderNo:      "GS-WRONG",
+		ThirdOrderNo: "T-PAIR",
+		Amount:       "100.00",
+	})
+	if err == nil {
+		t.Fatal("se esperaba error por pair mismatch")
+	}
+}
+
+// Response GS v2 tiene todos los campos.
+func TestRefund_ResponseV2Fields(t *testing.T) {
+	orderRepo := &mockOrderRepo{
+		creada: &domain.Order{
+			ThirdOrderNo:       "T-V2",
+			GsOrderNo:          "GS-V2",
+			PvsQrID:            "qr-v2",
+			Status:             domain.OrderPaymentConfirmed,
+			PaymentConfirmedAt: time.Now(),
+			PriceCents:         15000,
+		},
+		statusActual: domain.OrderPaymentConfirmed,
+	}
+	refundSvc := NewRefundService(orderRepo, &mockPVSClient{}, &mockRefundRepo{}, &mockSyncLogRepo{})
+	resp, err := refundSvc.Refund(context.Background(), &RefundRequest{
+		RefundNo:     "refund-v2",
+		OrderNo:      "GS-V2",
+		ThirdOrderNo: "T-V2",
+		Amount:       "150.00",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.OrderNo != "GS-V2" {
+		t.Errorf("OrderNo = %q", resp.OrderNo)
+	}
+	if resp.TotalAmount != "150.00" {
+		t.Errorf("TotalAmount = %q, esperaba 150.00", resp.TotalAmount)
+	}
+	if resp.RefundAmount != "150.00" {
+		t.Errorf("RefundAmount = %q, esperaba 150.00", resp.RefundAmount)
+	}
+	if resp.RefundTime == "" {
+		t.Error("RefundTime vacio")
+	}
+	if resp.RefundMsg == "" {
+		t.Error("RefundMsg vacio")
+	}
+	if resp.ThirdRefundNo == "" {
+		t.Error("ThirdRefundNo vacio")
+	}
+}
+
+// PVS.Reverse success → refundStatus "waiting" (no "success").
+func TestRefund_StatusWaiting(t *testing.T) {
+	orderRepo := &mockOrderRepo{
+		creada: &domain.Order{
+			ThirdOrderNo:       "T-WAIT",
+			GsOrderNo:          "GS-WAIT",
+			PvsQrID:            "qr-wait",
+			Status:             domain.OrderPaymentConfirmed,
+			PaymentConfirmedAt: time.Now(),
+			PriceCents:         10000,
+		},
+		statusActual: domain.OrderPaymentConfirmed,
+	}
+	refundSvc := NewRefundService(orderRepo, &mockPVSClient{}, &mockRefundRepo{}, &mockSyncLogRepo{})
+	resp, err := refundSvc.Refund(context.Background(), &RefundRequest{
+		RefundNo:     "refund-wait",
+		OrderNo:      "GS-WAIT",
+		ThirdOrderNo: "T-WAIT",
+		Amount:       "100.00",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.RefundStatus != "waiting" {
+		t.Errorf("RefundStatus = %q, esperaba waiting", resp.RefundStatus)
+	}
+}
+
+// Sin orderNo → error de validacion.
+func TestRefund_ValidacionOrderNoVacio(t *testing.T) {
+	svc := NewRefundService(&mockOrderRepo{}, &mockPVSClient{}, &mockRefundRepo{}, &mockSyncLogRepo{})
+	_, err := svc.Refund(context.Background(), &RefundRequest{
+		RefundNo: "refund-vno", ThirdOrderNo: "ord-123", Amount: "100.00",
+	})
+	if err == nil {
+		t.Fatal("se esperaba error por orderNo vacio")
+	}
+}
+
+// --- RefundStatus ---
+
+func seedRefundStatus(orderStatus domain.OrderStatus, refundStatus domain.RefundStatus) (*mockOrderRepo, *mockRefundRepo) {
+	orderRepo := &mockOrderRepo{
+		creada: &domain.Order{
+			ThirdOrderNo: "T-RS",
+			GsOrderNo:    "GS-RS",
+			PvsQrID:      "qr-rs",
+			Status:       orderStatus,
+			PriceCents:   10000,
+		},
+		statusActual: orderStatus,
+	}
+	refund := &domain.Refund{
+		RefundNo:     "ref-rs",
+		ThirdOrderNo: "T-RS",
+		PriceCents:   10000,
+		Status:       refundStatus,
+		CreatedAt:    time.Now(),
+	}
+	refundRepo := &mockRefundRepo{
+		created:    refund,
+		status:     refundStatus,
+		byRefundNo: map[string]*domain.Refund{"ref-rs": refund},
+	}
+	return orderRepo, refundRepo
+}
+
+// AT-12: pending cuando refund aceptado y orden aun REFUND_PENDING.
+func TestRefundStatus_ByRefundNo_Pending(t *testing.T) {
+	orderRepo, refundRepo := seedRefundStatus(domain.OrderRefundPending, domain.RefundSuccess)
+	svc := NewRefundService(orderRepo, &mockPVSClient{}, refundRepo, &mockSyncLogRepo{})
+	resp, err := svc.RefundStatus(context.Background(), &RefundStatusRequest{
+		OrderNo: "GS-RS", RefundNo: "ref-rs",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.RefundStatus != "pending" {
+		t.Errorf("RefundStatus = %q, esperaba pending", resp.RefundStatus)
+	}
+}
+
+func TestRefundStatus_ByRefundNo_Success(t *testing.T) {
+	orderRepo, refundRepo := seedRefundStatus(domain.OrderRefunded, domain.RefundSuccess)
+	svc := NewRefundService(orderRepo, &mockPVSClient{}, refundRepo, &mockSyncLogRepo{})
+	resp, err := svc.RefundStatus(context.Background(), &RefundStatusRequest{
+		OrderNo: "GS-RS", RefundNo: "ref-rs",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.RefundStatus != "success" {
+		t.Errorf("RefundStatus = %q, esperaba success", resp.RefundStatus)
+	}
+}
+
+func TestRefundStatus_ByRefundNo_Fail(t *testing.T) {
+	orderRepo, refundRepo := seedRefundStatus(domain.OrderRefundFailed, domain.RefundFailed)
+	svc := NewRefundService(orderRepo, &mockPVSClient{}, refundRepo, &mockSyncLogRepo{})
+	resp, err := svc.RefundStatus(context.Background(), &RefundStatusRequest{
+		OrderNo: "GS-RS", RefundNo: "ref-rs",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.RefundStatus != "fail" {
+		t.Errorf("RefundStatus = %q, esperaba fail", resp.RefundStatus)
+	}
+}
+
+func TestRefundStatus_LatestByOrderNo(t *testing.T) {
+	orderRepo, refundRepo := seedRefundStatus(domain.OrderRefundPending, domain.RefundSuccess)
+	svc := NewRefundService(orderRepo, &mockPVSClient{}, refundRepo, &mockSyncLogRepo{})
+	resp, err := svc.RefundStatus(context.Background(), &RefundStatusRequest{
+		OrderNo: "GS-RS",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.RefundNo != "ref-rs" {
+		t.Errorf("RefundNo = %q", resp.RefundNo)
+	}
+	if resp.RefundStatus != "pending" {
+		t.Errorf("RefundStatus = %q, esperaba pending", resp.RefundStatus)
+	}
+}
+
+func TestRefundStatus_NotFound(t *testing.T) {
+	svc := NewRefundService(&mockOrderRepo{}, &mockPVSClient{}, &mockRefundRepo{}, &mockSyncLogRepo{})
+	_, err := svc.RefundStatus(context.Background(), &RefundStatusRequest{
+		OrderNo: "GS-X", RefundNo: "no-existe",
+	})
+	if err != domain.ErrRefundNotFound {
+		t.Errorf("error = %v, esperaba ErrRefundNotFound", err)
+	}
+}
+
+func TestRefundStatus_PairMismatch(t *testing.T) {
+	orderRepo, refundRepo := seedRefundStatus(domain.OrderRefundPending, domain.RefundSuccess)
+	svc := NewRefundService(orderRepo, &mockPVSClient{}, refundRepo, &mockSyncLogRepo{})
+	_, err := svc.RefundStatus(context.Background(), &RefundStatusRequest{
+		OrderNo: "GS-WRONG", RefundNo: "ref-rs",
+	})
+	if err == nil {
+		t.Fatal("se esperaba error por pair mismatch")
+	}
+}
+
+func TestRefundStatus_OrderNoRequired(t *testing.T) {
+	svc := NewRefundService(&mockOrderRepo{}, &mockPVSClient{}, &mockRefundRepo{}, &mockSyncLogRepo{})
+	_, err := svc.RefundStatus(context.Background(), &RefundStatusRequest{
+		RefundNo: "ref-rs",
+	})
+	if err == nil {
+		t.Fatal("se esperaba error por orderNo vacio")
 	}
 }
