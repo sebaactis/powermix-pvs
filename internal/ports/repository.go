@@ -15,11 +15,17 @@ type OrderRepository interface {
 	// Create persiste una nueva orden.
 	Create(ctx context.Context, o *domain.Order) error
 
-	// GetByOrderNo busca una orden por nuestro identificador unico.
-	GetByOrderNo(ctx context.Context, orderNo string) (*domain.Order, error)
+	// GetByThirdOrderNo busca una orden por nuestro identificador unico.
+	GetByThirdOrderNo(ctx context.Context, orderNo string) (*domain.Order, error)
+
+	// GetByGsOrderNo busca una orden por el serial orderNo de GS.
+	GetByGsOrderNo(ctx context.Context, gsOrderNo string) (*domain.Order, error)
 
 	// GetByPVSQrID busca una orden por el ID del QR de PVS.
 	GetByPVSQrID(ctx context.Context, qrID string) (*domain.Order, error)
+
+	// ListPaymentConfirmedUnnotified devuelve ordenes pagadas sin notify a GS.
+	ListPaymentConfirmedUnnotified(ctx context.Context, limit int) ([]domain.Order, error)
 
 	// UpdateStatus actualiza el estado interno de una orden.
 	// Usa SELECT ... FOR UPDATE si se pasa una transaccion explicita.
@@ -62,6 +68,9 @@ type RefundRepository interface {
 
 	GetByRefundNo(ctx context.Context, refundNo string) (*domain.Refund, error)
 
+	// GetLatestByThirdOrderNo devuelve el reembolso mas reciente de una orden.
+	GetLatestByThirdOrderNo(ctx context.Context, thirdOrderNo string) (*domain.Refund, error)
+
 	UpdateStatus(ctx context.Context, refundNo string,
 		status domain.RefundStatus) error
 }
@@ -77,16 +86,16 @@ type IdempotencyStore interface {
 
 // SyncLogEntry es un registro de auditoria de una llamada a PVS o GS.
 type SyncLogEntry struct {
-	OrderNo     string // orden asociada
-	Vendor      string // "PVS" o "GS"
-	Direction   string // "outbound" o "inbound"
-	Endpoint    string // ruta del endpoint
-	Method      string // GET, POST
-	RequestBody string // body del request (redactado)
-	StatusCode  int    // codigo HTTP de respuesta
-	LatencyMs   int64  // duracion en milisegundos
-	Error       string // mensaje de error si lo hubo
-	CreatedAt   time.Time
+	ThirdOrderNo string // orden asociada (third_order_no)
+	Vendor       string // "PVS" o "GS"
+	Direction    string // "outbound" o "inbound"
+	Endpoint     string // ruta del endpoint
+	Method       string // GET, POST
+	RequestBody  string // body del request (redactado)
+	StatusCode   int    // codigo HTTP de respuesta
+	LatencyMs    int64  // duracion en milisegundos
+	Error        string // mensaje de error si lo hubo
+	CreatedAt    time.Time
 }
 
 // SyncLogRepo: registro de auditoria para todas las llamadas a

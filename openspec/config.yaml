@@ -1,0 +1,58 @@
+# SDD project context — vps-powermix / powermix-pvs
+# Generated during sdd-init for gs-api-v2-adapt (2026-07-09)
+
+project: powermix-pvs
+module: github.com/seba/vps-powermix
+language: go
+go_version: "1.25.1"
+
+stack:
+  runtime: go
+  http: net/http (Go 1.22+ ServeMux)
+  db: postgresql
+  db_drivers:
+    - github.com/jmoiron/sqlx
+    - github.com/lib/pq
+  metrics: prometheus/client_golang
+  logging: log/slog
+  testing: testing + net/http/httptest
+
+architecture: hexagonal
+layout:
+  - cmd/server
+  - cmd/mockpvs
+  - internal/config
+  - internal/domain
+  - internal/ports
+  - internal/client/gs
+  - internal/client/pvs
+  - internal/handler
+  - internal/service
+  - internal/store
+  - internal/reconciler
+  - migrations
+
+conventions:
+  comments: spanish
+  log_messages: spanish
+  identifiers: english
+  currency: ARS only
+
+testing:
+  command: go test ./...
+  strict_tdd: true
+  unit_framework: testing
+  http_mocks: httptest
+
+strict_tdd: true
+test_command: go test ./...
+
+artifact_store_default: engram
+
+active_change: gs-api-v2-adapt
+
+notes:
+  - Bridge between GSWYIT (GS) vending machines and Argentine PVS QR provider.
+  - PRs 1-5 implemented under legacy GS REST surface /api/v1/orders*.
+  - GS Payment Open API v2.0 (Nueva API GS.md) requires contract re-adaptation.
+  - PVS integration is out of scope for gs-api-v2-adapt.

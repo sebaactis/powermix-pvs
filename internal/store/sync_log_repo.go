@@ -29,16 +29,16 @@ func NewPostgresSyncLogRepo(db *sqlx.DB) *PostgresSyncLogRepo {
 func (r *PostgresSyncLogRepo) Insert(ctx context.Context, entry *ports.SyncLogEntry) error {
 	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO api_sync_log
-			(order_no, vendor, direction, endpoint, method,
+			(third_order_no, vendor, direction, endpoint, method,
 			 request_body, status_code, latency_ms, error, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())`,
-		entry.OrderNo, entry.Vendor, entry.Direction, entry.Endpoint, entry.Method,
+		entry.ThirdOrderNo, entry.Vendor, entry.Direction, entry.Endpoint, entry.Method,
 		entry.RequestBody, entry.StatusCode, entry.LatencyMs, entry.Error,
 	)
 	if err != nil {
 		slog.Warn("no se pudo escribir el sync log (best-effort)",
 			"error", err,
-			"order_no", entry.OrderNo,
+			"third_order_no", entry.ThirdOrderNo,
 			"vendor", entry.Vendor,
 		)
 	}

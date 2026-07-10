@@ -14,16 +14,19 @@ func scanOrderRow(scanner interface {
 	Scan(dest ...interface{}) error
 }) (*domain.Order, error) {
 	var (
-		o                        domain.Order
-		pvsQrID, qrGen, qrExp   sql.NullString
+		o                       domain.Order
+		gsOrderNo               sql.NullString
+		pvsQrID                 sql.NullString
+		gsNotified              sql.NullString
+		qrGen, qrExp            sql.NullString
 		payConf, gsComp, gsCanc sql.NullString
-		refunded                 sql.NullString
+		refunded                sql.NullString
 	)
 
 	err := scanner.Scan(
-		&o.OrderNo, &o.DeviceID, &o.DeviceNo, &o.ObjectID, &o.PriceCents,
+		&o.ThirdOrderNo, &gsOrderNo, &o.DeviceID, &o.DeviceNo, &o.ObjectID, &o.PriceCents,
 		&o.PayMethod, &o.WayCode, &o.Status, &o.GsOrderStatus, &o.PvsStatus,
-		&pvsQrID, &o.PvsQrImage,
+		&pvsQrID, &o.PvsQrImage, &o.NotifyURL, &gsNotified,
 		&qrGen, &qrExp, &payConf, &gsComp, &gsCanc, &refunded,
 		&o.FailureReason, &o.CreatedAt, &o.UpdatedAt,
 	)
@@ -34,7 +37,9 @@ func scanOrderRow(scanner interface {
 		return nil, fmt.Errorf("escaneando orden: %w", err)
 	}
 
+	o.GsOrderNo = gsOrderNo.String
 	o.PvsQrID = pvsQrID.String
+	o.GsNotifiedAt = parseNullableTime(gsNotified)
 	o.QrGeneratedAt = parseNullableTime(qrGen)
 	o.QrExpiresAt = parseNullableTime(qrExp)
 	o.PaymentConfirmedAt = parseNullableTime(payConf)

@@ -6,19 +6,19 @@ import "time"
 type RefundStatus string
 
 const (
-	RefundPending RefundStatus = "PENDING"  // Solicitado, esperando PVS
-	RefundSuccess RefundStatus = "SUCCESS"  // PVS confirmo el reverse
-	RefundFailed  RefundStatus = "FAILED"   // El reverse contra PVS fallo
+	RefundPending RefundStatus = "PENDING" // Solicitado, esperando PVS
+	RefundSuccess RefundStatus = "SUCCESS" // PVS confirmo el reverse
+	RefundFailed  RefundStatus = "FAILED"  // El reverse contra PVS fallo
 )
 
 // Refund representa un reembolso solicitado por GS.
 type Refund struct {
-	ID          int64
-	RefundNo    string       // numero de reembolso de GS (idempotencia)
-	OrderNo     string       // orden original
-	PriceCents  int64        // monto del reembolso en centavos
-	Motivo      string       // razon del reembolso
-	Status      RefundStatus
+	ID           int64
+	RefundNo     string // numero de reembolso de GS (idempotencia)
+	ThirdOrderNo string // orden nuestra (SQL third_order_no)
+	PriceCents   int64  // monto del reembolso en centavos
+	Motivo       string // razon del reembolso
+	Status       RefundStatus
 
 	// PVS
 	PvsReverseID string // ID del reverse en PVS
@@ -27,9 +27,9 @@ type Refund struct {
 	GSRefundNo string // numero de reembolso de GS (puede ser diferente)
 
 	// Timestamps
-	RequestedAt  time.Time
-	CompletedAt  time.Time
-	Error        string
+	RequestedAt time.Time
+	CompletedAt time.Time
+	Error       string
 
 	CreatedAt time.Time
 	UpdatedAt time.Time

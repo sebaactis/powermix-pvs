@@ -26,9 +26,9 @@ func NewPostgresOrderRepository(db *sqlx.DB) *PostgresOrderRepository {
 
 // columnas usadas en SELECT y RETURNING.
 // Excluye id porque se auto-genera.
-const columnasOrden = `order_no, device_id, device_no, object_id, price_cents,
+const columnasOrden = `third_order_no, gs_order_no, device_id, device_no, object_id, price_cents,
 	pay_method, way_code, status, gs_order_status, pvs_status,
-	pvs_qr_id, pvs_qr_image,
+	pvs_qr_id, pvs_qr_image, notify_url, gs_notified_at,
 	qr_generated_at, qr_expires_at, payment_confirmed_at,
 	gs_completed_at, gs_cancelled_at, refunded_at,
 	failure_reason, created_at, updated_at`
@@ -36,13 +36,13 @@ const columnasOrden = `order_no, device_id, device_no, object_id, price_cents,
 // Create persiste una nueva orden y asigna ID y CreatedAt.
 func (r *PostgresOrderRepository) Create(ctx context.Context, o *domain.Order) error {
 	query := `INSERT INTO orders (` + columnasOrden + `)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,now(),now())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,now(),now())
 		RETURNING id, created_at`
 
 	err := r.db.QueryRowContext(ctx, query,
-		o.OrderNo, o.DeviceID, o.DeviceNo, o.ObjectID, o.PriceCents,
+		o.ThirdOrderNo, nilIfVacio(o.GsOrderNo), o.DeviceID, o.DeviceNo, o.ObjectID, o.PriceCents,
 		o.PayMethod, o.WayCode, o.Status, o.GsOrderStatus, o.PvsStatus,
-		nilIfVacio(o.PvsQrID), o.PvsQrImage,
+		nilIfVacio(o.PvsQrID), o.PvsQrImage, o.NotifyURL, nilIfZero(o.GsNotifiedAt),
 		nilIfZero(o.QrGeneratedAt), nilIfZero(o.QrExpiresAt),
 		nilIfZero(o.PaymentConfirmedAt), nilIfZero(o.GsCompletedAt),
 		nilIfZero(o.GsCancelledAt), nilIfZero(o.RefundedAt),
@@ -50,19 +50,52 @@ func (r *PostgresOrderRepository) Create(ctx context.Context, o *domain.Order) e
 	).Scan(&o.ID, &o.CreatedAt)
 
 	if err != nil {
-		return fmt.Errorf("creando orden %s: %w", o.OrderNo, err)
+		return fmt.Errorf("creando orden %s: %w", o.ThirdOrderNo, err)
 	}
 	return nil
 }
 
-// GetByOrderNo busca una orden por nuestro identificador unico.
-func (r *PostgresOrderRepository) GetByOrderNo(ctx context.Context, orderNo string) (*domain.Order, error) {
-	query := `SELECT ` + columnasOrden + ` FROM orders WHERE order_no = $1`
+// GetByThirdOrderNo busca una orden por nuestro identificador unico.
+func (r *PostgresOrderRepository) GetByThirdOrderNo(ctx context.Context, orderNo string) (*domain.Order, error) {
+	query := `SELECT ` + columnasOrden + ` FROM orders WHERE third_order_no = $1`
 	o, err := r.escanearOrden(r.db.QueryRowContext(ctx, query, orderNo))
 	if err != nil {
 		return nil, fmt.Errorf("buscando orden %s: %w", orderNo, err)
 	}
 	return o, nil
+}
+
+// GetByGsOrderNo busca una orden por el serial orderNo de GS.
+func (r *PostgresOrderRepository) GetByGsOrderNo(ctx context.Context, gsOrderNo string) (*domain.Order, error) {
+	query := `SELECT ` + columnasOrden + ` FROM orders WHERE gs_order_no = $1`
+	o, err := r.escanearOrden(r.db.QueryRowContext(ctx, query, gsOrderNo))
+	if err != nil {
+		return nil, fmt.Errorf("buscando orden por gs_order_no %s: %w", gsOrderNo, err)
+	}
+	return o, nil
+}
+
+// ListPaymentConfirmedUnnotified devuelve pagos confirmados sin notify a GS.
+func (r *PostgresOrderRepository) ListPaymentConfirmedUnnotified(ctx context.Context, limit int) ([]domain.Order, error) {
+	query := `SELECT ` + columnasOrden + ` FROM orders
+		WHERE status = $1 AND gs_notified_at IS NULL
+		ORDER BY updated_at ASC LIMIT $2`
+
+	rows, err := r.db.QueryContext(ctx, query, domain.OrderPaymentConfirmed, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listando ordenes sin notify GS: %w", err)
+	}
+	defer rows.Close()
+
+	var ordenes []domain.Order
+	for rows.Next() {
+		o, err := r.escanearOrden(rows)
+		if err != nil {
+			return nil, err
+		}
+		ordenes = append(ordenes, *o)
+	}
+	return ordenes, rows.Err()
 }
 
 // GetByPVSQrID busca una orden por el ID de QR de PVS.
@@ -79,7 +112,7 @@ func (r *PostgresOrderRepository) GetByPVSQrID(ctx context.Context, qrID string)
 // Marca updated_at automaticamente.
 func (r *PostgresOrderRepository) UpdateStatus(ctx context.Context, orderNo string, status domain.OrderStatus) error {
 	result, err := r.db.ExecContext(ctx,
-		`UPDATE orders SET status = $1, updated_at = now() WHERE order_no = $2`,
+		`UPDATE orders SET status = $1, updated_at = now() WHERE third_order_no = $2`,
 		status, orderNo)
 	if err != nil {
 		return fmt.Errorf("actualizando estado de %s a %s: %w", orderNo, status, err)
@@ -112,7 +145,7 @@ func (r *PostgresOrderRepository) UpdateStatusAndFields(ctx context.Context, ord
 	}
 	args = append(args, orderNo)
 
-	query := fmt.Sprintf("UPDATE orders SET %s WHERE order_no = $%d",
+	query := fmt.Sprintf("UPDATE orders SET %s WHERE third_order_no = $%d",
 		joinString(setParts, ", "), i)
 
 	result, err := r.db.ExecContext(ctx, query, args...)
@@ -134,7 +167,7 @@ func (r *PostgresOrderRepository) UpdateStatusGuarded(ctx context.Context,
 
 	result, err := r.db.ExecContext(ctx,
 		`UPDATE orders SET status = $1, updated_at = now()
-		 WHERE order_no = $2 AND status = $3`,
+		 WHERE third_order_no = $2 AND status = $3`,
 		newStatus, orderNo, expectedStatus)
 	if err != nil {
 		return false, fmt.Errorf("update guarded %s: %w", orderNo, err)
@@ -163,7 +196,7 @@ func (r *PostgresOrderRepository) UpdateStatusGuardedAndFields(ctx context.Conte
 	}
 	args = append(args, orderNo, expectedStatus)
 
-	query := fmt.Sprintf("UPDATE orders SET %s WHERE order_no = $%d AND status = $%d",
+	query := fmt.Sprintf("UPDATE orders SET %s WHERE third_order_no = $%d AND status = $%d",
 		joinString(setParts, ", "), i, i+1)
 
 	result, err := r.db.ExecContext(ctx, query, args...)

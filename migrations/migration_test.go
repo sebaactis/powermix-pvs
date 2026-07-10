@@ -34,6 +34,8 @@ func TestMigrationsAplicanCorrectamente(t *testing.T) {
 		{"004_refunds", "./004_refunds.up.sql"},
 		{"005_reconciler_runs", "./005_reconciler_runs.up.sql"},
 		{"006_order_status_history", "./006_order_status_history.up.sql"},
+		{"007_gs_v2_fields", "./007_gs_v2_fields.up.sql"},
+		{"008_rename_to_third_order_no", "./008_rename_to_third_order_no.up.sql"},
 	}
 
 	for _, m := range migrations {
@@ -81,6 +83,8 @@ func TestMigrationsAplicanCorrectamente(t *testing.T) {
 		nombre string
 		sql    string
 	}{
+		{"008_rename_to_third_order_no", "./008_rename_to_third_order_no.down.sql"},
+		{"007_gs_v2_fields", "./007_gs_v2_fields.down.sql"},
 		{"006_order_status_history", "./006_order_status_history.down.sql"},
 		{"005_reconciler_runs", "./005_reconciler_runs.down.sql"},
 		{"004_refunds", "./004_refunds.down.sql"},

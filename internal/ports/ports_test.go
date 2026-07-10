@@ -18,11 +18,17 @@ var _ OrderRepository = (*mockOrderRepo)(nil)
 func (m *mockOrderRepo) Create(_ context.Context, _ *domain.Order) error {
 	return nil
 }
-func (m *mockOrderRepo) GetByOrderNo(_ context.Context, _ string) (*domain.Order, error) {
+func (m *mockOrderRepo) GetByThirdOrderNo(_ context.Context, _ string) (*domain.Order, error) {
+	return nil, domain.ErrOrderNotFound
+}
+func (m *mockOrderRepo) GetByGsOrderNo(_ context.Context, _ string) (*domain.Order, error) {
 	return nil, domain.ErrOrderNotFound
 }
 func (m *mockOrderRepo) GetByPVSQrID(_ context.Context, _ string) (*domain.Order, error) {
 	return nil, domain.ErrOrderNotFound
+}
+func (m *mockOrderRepo) ListPaymentConfirmedUnnotified(_ context.Context, _ int) ([]domain.Order, error) {
+	return nil, nil
 }
 func (m *mockOrderRepo) UpdateStatus(_ context.Context, _ string, _ domain.OrderStatus) error {
 	return nil
@@ -76,6 +82,9 @@ func (m *mockRefundRepo) Create(_ context.Context, _ *domain.Refund) error {
 func (m *mockRefundRepo) GetByRefundNo(_ context.Context, _ string) (*domain.Refund, error) {
 	return nil, domain.ErrRefundNotFound
 }
+func (m *mockRefundRepo) GetLatestByThirdOrderNo(_ context.Context, _ string) (*domain.Refund, error) {
+	return nil, domain.ErrRefundNotFound
+}
 func (m *mockRefundRepo) UpdateStatus(_ context.Context, _ string, _ domain.RefundStatus) error {
 	return nil
 }
@@ -100,11 +109,8 @@ type mockGSClient struct{}
 
 var _ GSClient = (*mockGSClient)(nil)
 
-func (m *mockGSClient) QueryStatus(_ context.Context, _ *GSQueryRequest) (*GSQueryResponse, error) {
-	return &GSQueryResponse{OrderStatus: 1}, nil
-}
-func (m *mockGSClient) Refund(_ context.Context, _ *GSRefundRequest) (*GSRefundResponse, error) {
-	return &GSRefundResponse{RefundStatus: "success"}, nil
+func (m *mockGSClient) NotifyPayment(_ context.Context, _ *GSNotifyPaymentRequest) (*GSNotifyPaymentResponse, error) {
+	return &GSNotifyPaymentResponse{ReturnCode: "success"}, nil
 }
 
 type mockPVSClient struct{}
@@ -148,5 +154,6 @@ var _ HealthChecker = (*mockHealthChecker)(nil)
 func (m *mockHealthChecker) PingDB(_ context.Context) error {
 	return nil
 }
-func (m *mockHealthChecker) CheckClockDrift(_ context.Context) (time.Duration, error) {	return 0, nil
+func (m *mockHealthChecker) CheckClockDrift(_ context.Context) (time.Duration, error) {
+	return 0, nil
 }

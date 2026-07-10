@@ -10,10 +10,11 @@ import "time"
 // la maquina expendedora (GS) y el proveedor de pagos (PVS).
 type Order struct {
 	// Identificadores
-	ID       int64
-	OrderNo  string // UUIDv7, identifica la orden en nuestro sistema
-	DeviceID string // ID del dispositivo GS
-	DeviceNo string // Numero de serie del dispositivo
+	ID           int64
+	ThirdOrderNo string // nuestro id (SQL third_order_no); GS lo llama thirdOrderNo
+	GsOrderNo    string // serial de GS (SQL gs_order_no); GS lo llama orderNo
+	DeviceID     string // ID del dispositivo GS
+	DeviceNo     string // Numero de serie del dispositivo
 
 	// Producto
 	ObjectID   string // SKU del producto (bebida)
@@ -32,6 +33,10 @@ type Order struct {
 	// QR (PVS)
 	PvsQrID    string // ID interno del QR en PVS
 	PvsQrImage string // QR en base64 (lo que devuelve PVS)
+
+	// Callback GS (Open API v2)
+	NotifyURL    string    // URL absoluta donde avisamos el pago a GS
+	GsNotifiedAt time.Time // cuando notificamos con exito (zero = pendiente)
 
 	// Timestamps de ciclo de vida
 	QrGeneratedAt      time.Time

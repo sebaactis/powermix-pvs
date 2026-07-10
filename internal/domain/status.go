@@ -54,12 +54,12 @@ var transitionTable = map[OrderStatus][]OrderStatus{
 	OrderQRShown:          {OrderPaymentConfirmed, OrderFailed, OrderTimeout, OrderCancelled},
 	OrderPaymentConfirmed: {OrderDone, OrderRefundPending, OrderFailed, OrderCancelled},
 	OrderRefundPending:    {OrderRefunded, OrderRefundFailed},
-	// Terminales: no pueden transicionar a ningun otro estado
-	OrderDone:       {OrderRefundPending}, // entregado pero reembolsable
-	OrderFailed:     {},
-	OrderTimeout:    {},
-	OrderCancelled:  {},
-	OrderRefunded:   {},
+	// Terminales / semi-terminales
+	OrderDone:         {OrderRefundPending}, // entregado pero reembolsable
+	OrderFailed:       {OrderRefundPending}, // fallo post-pago (ej. complete success=false) sigue reembolsable
+	OrderTimeout:      {},
+	OrderCancelled:    {},
+	OrderRefunded:     {},
 	OrderRefundFailed: {},
 }
 

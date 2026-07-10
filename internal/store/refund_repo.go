@@ -20,18 +20,18 @@ func NewPostgresRefundRepository(db *sqlx.DB) *PostgresRefundRepository {
 	return &PostgresRefundRepository{db: db}
 }
 
-const columnasRefund = `refund_no, order_no, price_cents, motivo, status,
+const columnasRefund = `refund_no, third_order_no, price_cents, motivo, status,
 	pvs_reverse_id, gs_refund_no, requested_at, completed_at, error,
 	created_at, updated_at`
 
 // Create persiste un nuevo reembolso.
 func (r *PostgresRefundRepository) Create(ctx context.Context, rf *domain.Refund) error {
-	query := `INSERT INTO refunds (refund_no, order_no, price_cents, motivo, status, gs_refund_no)
+	query := `INSERT INTO refunds (refund_no, third_order_no, price_cents, motivo, status, gs_refund_no)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id, requested_at, created_at`
 
 	err := r.db.QueryRowContext(ctx, query,
-		rf.RefundNo, rf.OrderNo, rf.PriceCents, rf.Motivo, rf.Status, rf.GSRefundNo,
+		rf.RefundNo, rf.ThirdOrderNo, rf.PriceCents, rf.Motivo, rf.Status, rf.GSRefundNo,
 	).Scan(&rf.ID, &rf.RequestedAt, &rf.CreatedAt)
 
 	if err != nil {
@@ -53,7 +53,7 @@ func (r *PostgresRefundRepository) GetByRefundNo(ctx context.Context, refundNo s
 
 	err := r.db.QueryRowContext(ctx, query, refundNo).Scan(
 		&rf.ID,
-		&rf.RefundNo, &rf.OrderNo, &rf.PriceCents, &rf.Motivo, &rf.Status,
+		&rf.RefundNo, &rf.ThirdOrderNo, &rf.PriceCents, &rf.Motivo, &rf.Status,
 		&pvsRevID, &rf.GSRefundNo, &reqAt, &completedAt, &rf.Error,
 		&rf.CreatedAt, &rf.UpdatedAt,
 	)
@@ -62,6 +62,39 @@ func (r *PostgresRefundRepository) GetByRefundNo(ctx context.Context, refundNo s
 	}
 	if err != nil {
 		return nil, fmt.Errorf("buscando reembolso %s: %w", refundNo, err)
+	}
+
+	rf.PvsReverseID = pvsRevID.String
+	rf.RequestedAt = parseNullableTime(reqAt)
+	rf.CompletedAt = parseNullableTime(completedAt)
+	return &rf, nil
+}
+
+// GetLatestByThirdOrderNo devuelve el reembolso mas reciente de una orden.
+func (r *PostgresRefundRepository) GetLatestByThirdOrderNo(ctx context.Context, thirdOrderNo string) (*domain.Refund, error) {
+	var (
+		rf          domain.Refund
+		pvsRevID    sql.NullString
+		reqAt       sql.NullString
+		completedAt sql.NullString
+	)
+
+	query := `SELECT id, ` + columnasRefund + ` FROM refunds
+		WHERE third_order_no = $1
+		ORDER BY created_at DESC
+		LIMIT 1`
+
+	err := r.db.QueryRowContext(ctx, query, thirdOrderNo).Scan(
+		&rf.ID,
+		&rf.RefundNo, &rf.ThirdOrderNo, &rf.PriceCents, &rf.Motivo, &rf.Status,
+		&pvsRevID, &rf.GSRefundNo, &reqAt, &completedAt, &rf.Error,
+		&rf.CreatedAt, &rf.UpdatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, domain.ErrRefundNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("buscando reembolso de orden %s: %w", thirdOrderNo, err)
 	}
 
 	rf.PvsReverseID = pvsRevID.String

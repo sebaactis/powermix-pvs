@@ -20,7 +20,7 @@ import (
 // Cliente es la implementacion concreta de ports.GSClient.
 type Cliente struct {
 	httpClient *http.Client
-	baseURL    string
+	baseURL    string // reservado; NotifyPayment usa URL absoluta de notifyUrl
 	key        string
 	secret     string
 }
@@ -49,7 +49,6 @@ func ConTimeoutHTTP(d time.Duration) Opcion {
 
 // SignRequest firma un request saliente con los headers key, key-md5 y timestamp.
 // Algoritmo: md5(key + secret + timestamp), donde timestamp es epoch millis.
-// Los headers se setean en el request modificandolo in-place.
 func SignRequest(req *http.Request, key, secret string) {
 	ts := time.Now().UnixMilli()
 	tsStr := strconv.FormatInt(ts, 10)
@@ -64,33 +63,39 @@ func SignRequest(req *http.Request, key, secret string) {
 	req.Header.Set("Content-Type", "application/json")
 }
 
-// -- GSClient implementation --
-
-// QueryStatus consulta el estado de una orden en GS.
-// En Path A (polling) no se usa, pero se implementa por si el
-// reconciler necesita consultar o si el patron cambia en el futuro.
-func (c *Cliente) QueryStatus(ctx context.Context, req *ports.GSQueryRequest) (*ports.GSQueryResponse, error) {
-	cuerpo, _ := json.Marshal(map[string]string{
-		"orderNo":      req.OrderNo,
-		"thirdOrderNo": req.ThirdOrderNo,
-	})
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST",
-		c.baseURL+"/payments/query", bytes.NewReader(cuerpo))
-	if err != nil {
-		return nil, fmt.Errorf("creando request QueryStatus: %w", err)
+// NotifyPayment avisa a GS el resultado de pago en la notifyUrl de la orden.
+// POST a URL absoluta (no se usa baseURL).
+func (c *Cliente) NotifyPayment(ctx context.Context, req *ports.GSNotifyPaymentRequest) (*ports.GSNotifyPaymentResponse, error) {
+	if req == nil || req.NotifyURL == "" {
+		return nil, fmt.Errorf("notifyUrl es obligatorio")
 	}
 
+	cuerpo, err := json.Marshal(map[string]string{
+		"orderNo":       req.OrderNo,
+		"thirdOrderNo":  req.ThirdOrderNo,
+		"orderStatus":   req.OrderStatus,
+		"orderTime":     req.OrderTime,
+		"payTime":       req.PayTime,
+		"totalAmount":   req.TotalAmount,
+		"channelUserId": req.ChannelUserID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("serializando NotifyPayment: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", req.NotifyURL, bytes.NewReader(cuerpo))
+	if err != nil {
+		return nil, fmt.Errorf("creando request NotifyPayment: %w", err)
+	}
 	SignRequest(httpReq, c.key, c.secret)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("QueryStatus fallo: %w", err)
+		return nil, fmt.Errorf("NotifyPayment fallo: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBytes, _ := io.ReadAll(resp.Body)
-
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("GS respondio %d: %s", resp.StatusCode, string(respBytes))
 	}
@@ -98,79 +103,26 @@ func (c *Cliente) QueryStatus(ctx context.Context, req *ports.GSQueryRequest) (*
 	var gsResp struct {
 		Code int `json:"code"`
 		Data struct {
-			OrderNo      string `json:"orderNo"`
-			OrderStatus  int    `json:"orderStatus"`
-			ThirdOrderNo string `json:"thirdOrderNo"`
+			ReturnCode string `json:"returnCode"`
+			ReturnMsg  string `json:"returnMsg"`
 		} `json:"data"`
+		Msg string `json:"msg"`
 	}
 	if err := json.Unmarshal(respBytes, &gsResp); err != nil {
-		return nil, fmt.Errorf("parseando respuesta GS: %w", err)
+		// Algunos ejemplos de la doc devuelven data vacia; si HTTP 2xx, OK.
+		return &ports.GSNotifyPaymentResponse{ReturnCode: "success"}, nil
+	}
+	if gsResp.Code != 0 && gsResp.Code != 200 {
+		return nil, fmt.Errorf("GS NotifyPayment error code %d: %s", gsResp.Code, gsResp.Msg)
 	}
 
-	if gsResp.Code != 200 {
-		return nil, fmt.Errorf("GS error %d", gsResp.Code)
+	returnCode := gsResp.Data.ReturnCode
+	if returnCode == "" {
+		returnCode = "success"
 	}
-
-	return &ports.GSQueryResponse{
-		OrderNo:      gsResp.Data.OrderNo,
-		ThirdOrderNo: gsResp.Data.ThirdOrderNo,
-		OrderStatus:  gsResp.Data.OrderStatus,
-	}, nil
-}
-
-// Refund solicita un reembolso a GS.
-func (c *Cliente) Refund(ctx context.Context, req *ports.GSRefundRequest) (*ports.GSRefundResponse, error) {
-	cuerpo, _ := json.Marshal(map[string]string{
-		"refundNo":        req.RefundNo,
-		"orderNo":         req.OrderNo,
-		"thirdOrderNo":    req.ThirdOrderNo,
-		"refundAmount":    req.RefundAmount,
-		"refundReason":    req.RefundReason,
-		"refundNotifyUrl": req.RefundNotifyURL,
-	})
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST",
-		c.baseURL+"/payments/refund", bytes.NewReader(cuerpo))
-	if err != nil {
-		return nil, fmt.Errorf("creando request Refund: %w", err)
-	}
-
-	SignRequest(httpReq, c.key, c.secret)
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("Refund fallo: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBytes, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("GS respondio %d: %s", resp.StatusCode, string(respBytes))
-	}
-
-	var gsResp struct {
-		Code int `json:"code"`
-		Data struct {
-			RefundNo     string `json:"refundNo"`
-			OrderNo      string `json:"orderNo"`
-			ThirdOrderNo string `json:"thirdOrderNo"`
-			RefundStatus string `json:"refundStatus"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(respBytes, &gsResp); err != nil {
-		return nil, fmt.Errorf("parseando respuesta GS Refund: %w", err)
-	}
-
-	if gsResp.Code != 200 {
-		return nil, fmt.Errorf("GS Refund error %d", gsResp.Code)
-	}
-
-	return &ports.GSRefundResponse{
-		RefundNo:     gsResp.Data.RefundNo,
-		OrderNo:      gsResp.Data.OrderNo,
-		ThirdOrderNo: gsResp.Data.ThirdOrderNo,
-		RefundStatus: gsResp.Data.RefundStatus,
+	return &ports.GSNotifyPaymentResponse{
+		ReturnCode: returnCode,
+		ReturnMsg:  gsResp.Data.ReturnMsg,
 	}, nil
 }
 

@@ -13,9 +13,9 @@ import (
 	"github.com/seba/vps-powermix/internal/ports"
 )
 
-// TestPostgresOrderRepository_CreateEGetByOrderNo verifica que se puede
-// crear una orden y recuperarla por su order_no.
-func TestPostgresOrderRepository_CreateEGetByOrderNo(t *testing.T) {
+// TestPostgresOrderRepository_CreateEGetByThirdOrderNo verifica que se puede
+// crear una orden y recuperarla por su third_order_no.
+func TestPostgresOrderRepository_CreateEGetByThirdOrderNo(t *testing.T) {
 	db := conectarDB(t)
 	defer db.Close()
 
@@ -24,7 +24,7 @@ func TestPostgresOrderRepository_CreateEGetByOrderNo(t *testing.T) {
 
 	// Crear orden
 	orden := &domain.Order{
-		OrderNo:    "test-order-001",
+		ThirdOrderNo:    "test-order-001",
 		DeviceID:   "dev-001",
 		ObjectID:   "drink-fresa",
 		PriceCents: 15000,
@@ -43,14 +43,14 @@ func TestPostgresOrderRepository_CreateEGetByOrderNo(t *testing.T) {
 		t.Error("CreatedAt no fue asignado")
 	}
 
-	// Recuperar por order_no
-	recuperada, err := repo.GetByOrderNo(ctx, orden.OrderNo)
+	// Recuperar por third_order_no
+	recuperada, err := repo.GetByThirdOrderNo(ctx, orden.ThirdOrderNo)
 	if err != nil {
 		t.Fatalf("error recuperando orden: %v", err)
 	}
 
-	if recuperada.OrderNo != orden.OrderNo {
-		t.Errorf("order_no = %q, esperaba %q", recuperada.OrderNo, orden.OrderNo)
+	if recuperada.ThirdOrderNo != orden.ThirdOrderNo {
+		t.Errorf("third_order_no = %q, esperaba %q", recuperada.ThirdOrderNo, orden.ThirdOrderNo)
 	}
 	if recuperada.PriceCents != 15000 {
 		t.Errorf("PriceCents = %d, esperaba 15000", recuperada.PriceCents)
@@ -71,12 +71,12 @@ func TestPostgresOrderRepository_UpdateStatus(t *testing.T) {
 
 	orden := crearOrdenTest(t, repo, ctx)
 
-	err := repo.UpdateStatus(ctx, orden.OrderNo, domain.OrderQRRequested)
+	err := repo.UpdateStatus(ctx, orden.ThirdOrderNo, domain.OrderQRRequested)
 	if err != nil {
 		t.Fatalf("error actualizando estado: %v", err)
 	}
 
-	recuperada, err := repo.GetByOrderNo(ctx, orden.OrderNo)
+	recuperada, err := repo.GetByThirdOrderNo(ctx, orden.ThirdOrderNo)
 	if err != nil {
 		t.Fatalf("error recuperando orden: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestPostgresOrderRepository_GetByPVSQrID(t *testing.T) {
 	orden := crearOrdenTest(t, repo, ctx)
 
 	// Actualizar con QR ID
-	err := repo.UpdateStatusAndFields(ctx, orden.OrderNo, domain.OrderQRShown,
+	err := repo.UpdateStatusAndFields(ctx, orden.ThirdOrderNo, domain.OrderQRShown,
 		map[string]interface{}{"pvs_qr_id": "pvs-qr-test-123"})
 	if err != nil {
 		t.Fatalf("error actualizando QR: %v", err)
@@ -115,14 +115,14 @@ func TestPostgresOrderRepository_GetByPVSQrID(t *testing.T) {
 	}
 }
 
-// TestPostgresOrderRepository_NotFound verifica que GetByOrderNo
+// TestPostgresOrderRepository_NotFound verifica que GetByThirdOrderNo
 // devuelve ErrOrderNotFound para ordenes inexistentes.
 func TestPostgresOrderRepository_NotFound(t *testing.T) {
 	db := conectarDB(t)
 	defer db.Close()
 
 	repo := NewPostgresOrderRepository(db)
-	_, err := repo.GetByOrderNo(context.Background(), "no-existe")
+	_, err := repo.GetByThirdOrderNo(context.Background(), "no-existe")
 	if err != domain.ErrOrderNotFound {
 		t.Errorf("error = %v, esperaba ErrOrderNotFound", err)
 	}
@@ -175,7 +175,7 @@ func TestPostgresSyncLogRepo_InsertBestEffort(t *testing.T) {
 	ctx := context.Background()
 
 	entry := &ports.SyncLogEntry{
-		OrderNo:    "test-log-001",
+		ThirdOrderNo:    "test-log-001",
 		Vendor:     "PVS",
 		Direction:  "outbound",
 		Endpoint:   "/qr/pvs/service",
@@ -200,7 +200,7 @@ func TestPostgresRefundRepository_CreateEGetByRefundNo(t *testing.T) {
 
 	rf := &domain.Refund{
 		RefundNo:   "test-refund-001",
-		OrderNo:    "test-order-001",
+		ThirdOrderNo:    "test-order-001",
 		PriceCents: 15000,
 		Motivo:     "test",
 		Status:     domain.RefundPending,
@@ -242,7 +242,7 @@ func TestPostgresRefundRepository_UpdateStatus(t *testing.T) {
 
 	rf := &domain.Refund{
 		RefundNo:   "test-refund-002",
-		OrderNo:    "test-order-002",
+		ThirdOrderNo:    "test-order-002",
 		PriceCents: 10000,
 		Status:     domain.RefundPending,
 	}
@@ -321,7 +321,7 @@ func crearOrdenTest(t *testing.T, repo *PostgresOrderRepository, ctx context.Con
 	t.Helper()
 
 	orden := &domain.Order{
-		OrderNo:    "test-" + time.Now().Format("150405.000"),
+		ThirdOrderNo:    "test-" + time.Now().Format("150405.000"),
 		DeviceID:   "dev-test",
 		ObjectID:   "drink-test",
 		PriceCents: 10000,

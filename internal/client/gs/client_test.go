@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -30,7 +31,6 @@ func TestSignRequest_AgregaHeaders(t *testing.T) {
 		t.Error("timestamp no fue seteado")
 	}
 
-	// Verificar formato del key-md5 (debe ser hex lowercase de 32 chars)
 	kmd5 := req.Header.Get("key-md5")
 	if len(kmd5) != 32 {
 		t.Errorf("key-md5 length = %d, esperaba 32", len(kmd5))
@@ -53,22 +53,17 @@ func TestSignRequest_TimestampEnMilisegundos(t *testing.T) {
 	tsStr := req.Header.Get("timestamp")
 	ts, err := time.Parse(time.RFC3339, tsStr)
 	if err != nil {
-		// No es un timestamp formato fecha, debe ser epoch millis
-		tsInt, err := strconv.ParseInt(tsStr, 10, 64)
+		_, err := strconv.ParseInt(tsStr, 10, 64)
 		if err != nil {
 			t.Fatalf("timestamp no es epoch millis: %q", tsStr)
 		}
-		// Debe tener 13 digitos (milliseconds)
-		if tsStr[0] != '1' && tsStr[0] != '2' {
-			t.Logf("timestamp = %s (epoch millis)", tsStr)
-		}
-		_ = tsInt
 	} else {
 		t.Errorf("timestamp es formato fecha %v, se esperaba epoch millis", ts)
 	}
 }
 
-func TestQueryStatus_OK(t *testing.T) {
+func TestNotifyPayment_OK(t *testing.T) {
+	var gotBody map[string]string
 	mockGS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("key") == "" {
 			t.Error("key header ausente")
@@ -76,90 +71,75 @@ func TestQueryStatus_OK(t *testing.T) {
 		if r.Header.Get("key-md5") == "" {
 			t.Error("key-md5 header ausente")
 		}
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"code": 200,
-			"data": map[string]interface{}{
-				"orderNo":      "GS-ORDER-001",
-				"orderStatus":  1,
-				"thirdOrderNo": "our-order-001",
+			"msg":  "success",
+			"data": map[string]string{
+				"returnCode": "success",
+				"returnMsg":  "ok",
 			},
-			"msg": "success",
 		})
 	}))
 	defer mockGS.Close()
 
-	client := New(mockGS.URL, "test-key", "test-secret")
-	resp, err := client.QueryStatus(context.Background(), &ports.GSQueryRequest{
-		OrderNo:      "GS-ORDER-001",
-		ThirdOrderNo: "our-order-001",
+	client := New("https://unused.example", "test-key", "test-secret")
+	resp, err := client.NotifyPayment(context.Background(), &ports.GSNotifyPaymentRequest{
+		NotifyURL:     mockGS.URL + "/pay/notify",
+		OrderNo:       "GS-ORDER-001",
+		ThirdOrderNo:  "our-order-001",
+		OrderStatus:   "2",
+		OrderTime:     "2026-03-01 18:28:16",
+		PayTime:       "2026-03-01 18:30:14",
+		TotalAmount:   "15.00",
+		ChannelUserID: "",
 	})
 	if err != nil {
-		t.Fatalf("QueryStatus fallo: %v", err)
+		t.Fatalf("NotifyPayment fallo: %v", err)
 	}
-	if resp.OrderStatus != 1 {
-		t.Errorf("OrderStatus = %d, esperaba 1 (pending)", resp.OrderStatus)
+	if resp.ReturnCode != "success" {
+		t.Errorf("ReturnCode = %q, esperaba success", resp.ReturnCode)
 	}
-	if resp.ThirdOrderNo != "our-order-001" {
-		t.Errorf("ThirdOrderNo = %q, esperaba our-order-001", resp.ThirdOrderNo)
+	if gotBody["orderStatus"] != "2" {
+		t.Errorf("body orderStatus = %q, esperaba 2", gotBody["orderStatus"])
+	}
+	if gotBody["thirdOrderNo"] != "our-order-001" {
+		t.Errorf("body thirdOrderNo = %q", gotBody["thirdOrderNo"])
 	}
 }
 
-func TestRefund_OK(t *testing.T) {
+func TestNotifyPayment_HTTPError(t *testing.T) {
 	mockGS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"code": 200,
-			"data": map[string]interface{}{
-				"refundNo":     "REFUND-001",
-				"orderNo":      "GS-ORDER-001",
-				"thirdOrderNo": "our-order-001",
-				"refundStatus": "success",
-			},
-			"msg": "success",
-		})
-	}))
-	defer mockGS.Close()
-
-	client := New(mockGS.URL, "test-key", "test-secret")
-	resp, err := client.Refund(context.Background(), &ports.GSRefundRequest{
-		RefundNo:        "REFUND-001",
-		OrderNo:         "GS-ORDER-001",
-		ThirdOrderNo:    "our-order-001",
-		RefundAmount:    "150.00",
-		RefundReason:    "Producto agotado",
-		RefundNotifyURL: "https://nosotros.com/webhook/gs",
-	})
-	if err != nil {
-		t.Fatalf("Refund fallo: %v", err)
-	}
-	if resp.RefundStatus != "success" {
-		t.Errorf("RefundStatus = %q, esperaba success", resp.RefundStatus)
-	}
-}
-
-func TestQueryStatus_Error(t *testing.T) {
-	mockGS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, `{"code":400,"msg":"parametros invalidos"}`)
+		fmt.Fprint(w, `{"code":400,"msg":"fail"}`)
 	}))
 	defer mockGS.Close()
 
-	client := New(mockGS.URL, "test-key", "test-secret")
-	_, err := client.QueryStatus(context.Background(), &ports.GSQueryRequest{
-		OrderNo: "INVALIDO",
+	client := New("https://unused.example", "test-key", "test-secret")
+	_, err := client.NotifyPayment(context.Background(), &ports.GSNotifyPaymentRequest{
+		NotifyURL:    mockGS.URL,
+		OrderNo:      "X",
+		ThirdOrderNo: "Y",
+		OrderStatus:  "2",
 	})
 	if err == nil {
 		t.Fatal("se esperaba error, pero fue nil")
 	}
 }
 
+func TestNotifyPayment_URLObligatoria(t *testing.T) {
+	client := New("https://unused.example", "test-key", "test-secret")
+	_, err := client.NotifyPayment(context.Background(), &ports.GSNotifyPaymentRequest{})
+	if err == nil {
+		t.Fatal("se esperaba error por notifyUrl vacia")
+	}
+}
+
 func TestSignRequest_HeaderOrderNoImporta(t *testing.T) {
-	// Verifica que firma es consistente: mismo key+secret+timestamp produce misma firma
 	key := "key-ejemplo"
 	secret := "secret-ejemplo"
 
@@ -167,8 +147,5 @@ func TestSignRequest_HeaderOrderNoImporta(t *testing.T) {
 	req2, _ := http.NewRequest("POST", "https://test.com/b", nil)
 
 	SignRequest(req1, key, secret)
-	// Para req2 usamos el mismo key+secret pero timestamp forzado (simulado)
-	// Como SignRequest usa time.Now(), los timestamps van a ser diferentes
-	// en cada llamado. Este test solo verifica que no panic.
 	SignRequest(req2, key, secret)
 }

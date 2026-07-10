@@ -23,13 +23,14 @@ func TestOrderStatusTransition(t *testing.T) {
 		{"payment_confirmed -> done", OrderPaymentConfirmed, OrderDone, true},
 		{"payment_confirmed -> refund_pending", OrderPaymentConfirmed, OrderRefundPending, true},
 		{"done -> refund_pending", OrderDone, OrderRefundPending, true},
+		{"failed -> refund_pending", OrderFailed, OrderRefundPending, true},
 		{"refund_pending -> refunded", OrderRefundPending, OrderRefunded, true},
 		{"refund_pending -> refund_failed", OrderRefundPending, OrderRefundFailed, true},
 		// Transiciones invalidas
 		{"received -> done (salta pasos)", OrderReceived, OrderDone, false},
 		{"received -> payment_confirmed (salta PVS)", OrderReceived, OrderPaymentConfirmed, false},
-		{"done -> cualquier (terminal)", OrderDone, OrderFailed, false},
-		{"failed -> cualquier (terminal)", OrderFailed, OrderReceived, false},
+		{"done -> failed (no permitido)", OrderDone, OrderFailed, false},
+		{"failed -> received (no permitido)", OrderFailed, OrderReceived, false},
 		{"timeout -> cualquier (terminal)", OrderTimeout, OrderRefundPending, false},
 		{"refunded -> cualquier (terminal)", OrderRefunded, OrderRefundPending, false},
 		{"received -> timeout (sin QR)", OrderReceived, OrderTimeout, false},
@@ -51,8 +52,7 @@ func TestOrderStatusTransition(t *testing.T) {
 // correctamente que no pueden transicionar.
 func TestEstadosTerminales(t *testing.T) {
 	terminales := []OrderStatus{
-		OrderFailed, OrderTimeout,
-		OrderCancelled, OrderRefunded, OrderRefundFailed,
+		OrderTimeout, OrderCancelled, OrderRefunded, OrderRefundFailed,
 	}
 
 	for _, s := range terminales {
@@ -64,6 +64,7 @@ func TestEstadosTerminales(t *testing.T) {
 	noTerminales := []OrderStatus{
 		OrderReceived, OrderQRRequested, OrderQRShown,
 		OrderPaymentConfirmed, OrderRefundPending, OrderDone,
+		OrderFailed, // reembolsable post-pago (GS v2 complete success=false)
 	}
 
 	for _, s := range noTerminales {
@@ -141,15 +142,15 @@ func TestErroresTipo(t *testing.T) {
 // los campos esperados. No es un test exhaustivo, solo de cordura.
 func TestOrderStruct(t *testing.T) {
 	o := Order{
-		OrderNo:    "test-001",
-		DeviceID:   "dev-1",
-		ObjectID:   "drink-001",
-		PriceCents: 15000,
-		Status:     OrderReceived,
+		ThirdOrderNo: "test-001",
+		DeviceID:     "dev-1",
+		ObjectID:     "drink-001",
+		PriceCents:   15000,
+		Status:       OrderReceived,
 	}
 
-	if o.OrderNo != "test-001" {
-		t.Errorf("OrderNo no se seteo correctamente")
+	if o.ThirdOrderNo != "test-001" {
+		t.Errorf("ThirdOrderNo no se seteo correctamente")
 	}
 	if o.Status != OrderReceived {
 		t.Errorf("Status deberia ser RECEIVED")

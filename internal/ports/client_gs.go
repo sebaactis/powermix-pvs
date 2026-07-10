@@ -2,41 +2,27 @@ package ports
 
 import "context"
 
-// GSQueryRequest es el payload para consultar el estado de una orden en GS.
-type GSQueryRequest struct {
-	OrderNo     string // numero de orden de GS
-	ThirdOrderNo string // nuestro numero de orden
+// GSNotifyPaymentRequest es el POST saliente a notifyUrl (GS Open API v2).
+// Machine Server = GS; nosotros somos Third Party.
+type GSNotifyPaymentRequest struct {
+	NotifyURL     string // URL absoluta; no se concatena con baseURL
+	OrderNo       string // serial de GS
+	ThirdOrderNo  string // nuestro id
+	OrderStatus   string // "2" en este change (pago exitoso)
+	OrderTime     string // yyyy-MM-dd HH:mm:ss UTC
+	PayTime       string
+	TotalAmount   string
+	ChannelUserID string
 }
 
-// GSQueryResponse es la respuesta de GS a una consulta de estado.
-type GSQueryResponse struct {
-	OrderNo     string
-	ThirdOrderNo string
-	OrderStatus  int // 1-6 segun DOCX
+// GSNotifyPaymentResponse es lo que nos interesa de la respuesta de GS.
+type GSNotifyPaymentResponse struct {
+	ReturnCode string
+	ReturnMsg  string
 }
 
-// GSRefundRequest es el payload para solicitar un reembolso a GS.
-type GSRefundRequest struct {
-	RefundNo        string // numero de reembolso (idempotencia)
-	OrderNo         string // orden original de GS
-	ThirdOrderNo    string // nuestro numero de orden
-	RefundAmount    string // monto en string, ej: "100.50"
-	RefundReason    string // motivo del reembolso
-	RefundNotifyURL string // webhook para notificar resultado
-}
-
-// GSRefundResponse es la respuesta de GS a una solicitud de reembolso.
-type GSRefundResponse struct {
-	RefundNo     string
-	OrderNo      string
-	ThirdOrderNo string
-	RefundStatus string // "success" o "fail"
-}
-
-// GSClient define las llamadas HTTP que hacemos hacia la maquina GS.
-// Solo las necesarias para Path A (polling): consultar estado y pedir
-// reembolso. No tenemos notificaciones salientes de pago.
+// GSClient define las llamadas HTTP salientes hacia GS.
+// En v2 el inbound es handler nuestro; el outbound es notify de pago.
 type GSClient interface {
-	QueryStatus(ctx context.Context, req *GSQueryRequest) (*GSQueryResponse, error)
-	Refund(ctx context.Context, req *GSRefundRequest) (*GSRefundResponse, error)
+	NotifyPayment(ctx context.Context, req *GSNotifyPaymentRequest) (*GSNotifyPaymentResponse, error)
 }
