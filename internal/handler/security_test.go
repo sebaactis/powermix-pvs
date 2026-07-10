@@ -13,7 +13,7 @@ import (
 func TestSecurity_JSONMalformado(t *testing.T) {
 	h := New(&mockOrderSvc{}, &mockRefundSvc{}, &mockDB{})
 
-	req := httptest.NewRequest("POST", "/api/v1/orders",
+	req := httptest.NewRequest("POST", "/order/qr",
 		strings.NewReader("{malformed json}"))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -28,7 +28,7 @@ func TestSecurity_JSONMalformado(t *testing.T) {
 func TestSecurity_EmptyBody(t *testing.T) {
 	h := New(&mockOrderSvc{}, &mockRefundSvc{}, &mockDB{})
 
-	req := httptest.NewRequest("POST", "/api/v1/orders", nil)
+	req := httptest.NewRequest("POST", "/order/qr", nil)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	h.Routes().ServeHTTP(w, req)
@@ -38,18 +38,18 @@ func TestSecurity_EmptyBody(t *testing.T) {
 	}
 }
 
-// TestSecurity_SQLInjectionPath: intento de SQL injection en path param.
+// TestSecurity_SQLInjectionPath: intento de SQL injection en thirdOrderNo.
 func TestSecurity_SQLInjectionPath(t *testing.T) {
 	h := New(&mockOrderSvc{}, &mockRefundSvc{}, &mockDB{})
 
-	// Path con SQL injection
-	req := httptest.NewRequest("GET", "/api/v1/orders/1%27%20OR%20%271%27%3D%271", nil)
+	body := `{"thirdOrderNo":"1' OR '1'='1"}`
+	req := httptest.NewRequest("POST", "/order/status", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	h.Routes().ServeHTTP(w, req)
 
-	// No debe devolver 500 (error interno)
 	if w.Code == http.StatusInternalServerError {
-		t.Error("SQL injection path devolvio 500 (deberia ser 404 u otro controlado)")
+		t.Error("SQL injection devolvio 500 (deberia ser controlado)")
 	}
 }
 
@@ -57,42 +57,37 @@ func TestSecurity_SQLInjectionPath(t *testing.T) {
 func TestSecurity_SQLInjectionBody(t *testing.T) {
 	h := New(&mockOrderSvc{}, &mockRefundSvc{}, &mockDB{})
 
-	body := `{"objectId":"'; DROP TABLE orders; --","totalAmount":"100.00","deviceId":"dev-1"}`
-	req := httptest.NewRequest("POST", "/api/v1/orders", strings.NewReader(body))
+	body := `{"orderNo":"GS-X","subject":"X","totalAmount":"100.00","notifyUrl":"https://gs.example/n","objectId":"'; DROP TABLE orders; --","attach":"deviceId=dev-1"}`
+	req := httptest.NewRequest("POST", "/order/qr", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	h.Routes().ServeHTTP(w, req)
 
-	// No debe devolver 500
 	if w.Code == http.StatusInternalServerError {
 		t.Error("SQL injection body devolvio 500")
 	}
-	// Deberia ser 200 (el servicio maneja el dato como string, no lo ejecuta)
-	// o 400 si la validacion lo rechaza
 	if w.Code >= 500 {
 		t.Errorf("SQL injection body devolvio %d (error de servidor inaceptable)", w.Code)
 	}
 }
 
-// TestSecurity_JSONMuyGrande: payload enorme -> debe rechazarse.
+// TestSecurity_JSONMuyGrande: payload enorme -> debe rechazarse o no crashear.
 func TestSecurity_JSONMuyGrande(t *testing.T) {
 	h := New(&mockOrderSvc{}, &mockRefundSvc{}, &mockDB{})
 
-	// Objeto con datos enormes
-	body := `{"objectId":"test","totalAmount":"1.00","deviceId":"` +
+	body := `{"orderNo":"GS-BIG","subject":"X","totalAmount":"1.00","notifyUrl":"https://gs.example/n","attach":"deviceId=` +
 		strings.Repeat("A", 1024*1024) + `"}` // ~1MB
-	req := httptest.NewRequest("POST", "/api/v1/orders", strings.NewReader(body))
+	req := httptest.NewRequest("POST", "/order/qr", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	h.Routes().ServeHTTP(w, req)
 
-	// Deberia dar 400 (body demasiado grande) o 413
 	if w.Code == http.StatusOK {
 		t.Log("payload grande fue aceptado (puede ser OK si el servidor lo permite)")
 	}
 }
 
-// TestSecurity_EstadoInvalido: stateId invalido -> 400.
+// TestSecurity_EstadoInvalido: stateId invalido -> 400 o no-op.
 func TestSecurity_EstadoInvalido(t *testing.T) {
 	h := New(&mockOrderSvc{}, &mockRefundSvc{}, &mockDB{})
 
@@ -102,7 +97,6 @@ func TestSecurity_EstadoInvalido(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.Routes().ServeHTTP(w, req)
 
-	// Deberia ser 400 (stateId invalido) o 200 si el service lo maneja como no-op
 	if w.Code >= http.StatusInternalServerError {
 		t.Errorf("stateId invalido devolvio %d (deberia ser 200 o 400)", w.Code)
 	}
@@ -112,29 +106,24 @@ func TestSecurity_EstadoInvalido(t *testing.T) {
 func TestSecurity_MetodoNoPermitido(t *testing.T) {
 	h := New(&mockOrderSvc{}, &mockRefundSvc{}, &mockDB{})
 
-	// GET en lugar de POST en CreateOrder
-	req := httptest.NewRequest("GET", "/api/v1/orders", nil)
+	req := httptest.NewRequest("GET", "/order/qr", nil)
 	w := httptest.NewRecorder()
 	h.Routes().ServeHTTP(w, req)
 
-	// Go 1.22+ ServeMux devuelve 405 para metodo no permitido
 	if w.Code != http.StatusMethodNotAllowed {
-		t.Logf("GET /api/v1/orders devolvio %d (podria ser 405 con Go 1.22+)", w.Code)
+		t.Logf("GET /order/qr devolvio %d (podria ser 405 con Go 1.22+)", w.Code)
 	}
 }
 
-// TestSecurity_ContentTypeIncorrecto: sin Content-Type -> 400.
+// TestSecurity_ContentTypeIncorrecto: sin Content-Type.
 func TestSecurity_ContentTypeIncorrecto(t *testing.T) {
 	h := New(&mockOrderSvc{}, &mockRefundSvc{}, &mockDB{})
 
-	req := httptest.NewRequest("POST", "/api/v1/orders",
-		strings.NewReader(`{"objectId":"test","totalAmount":"100.00","deviceId":"dev-1"}`))
-	// Sin Content-Type
+	req := httptest.NewRequest("POST", "/order/qr",
+		strings.NewReader(`{"orderNo":"GS-1","subject":"T","totalAmount":"100.00","notifyUrl":"https://gs.example/n","objectId":"test","attach":"deviceId=dev-1"}`))
 	w := httptest.NewRecorder()
 	h.Routes().ServeHTTP(w, req)
 
-	// json.Decoder no requiere Content-Type para procesar.
-	// El handler no valida Content-Type explicitamente.
 	if w.Code >= 500 {
 		t.Errorf("sin Content-Type devolvio %d", w.Code)
 	}

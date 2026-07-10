@@ -4,7 +4,10 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -21,8 +24,9 @@ type OrderService struct {
 	orderRepo   ports.OrderRepository
 	pvsClient   ports.PVSClient
 	syncLogRepo ports.SyncLogRepo
-	qrExpiry    time.Duration // cuánto vive el QR (default 180s)
-	dedupWindow time.Duration // ventana de dedup (default 20s)
+	gsClient    ports.GSClient // notify outbound a GS (puede ser nil en tests)
+	qrExpiry    time.Duration  // cuánto vive el QR (default 180s)
+	dedupWindow time.Duration  // ventana de dedup (default 20s)
 }
 
 // Option permite configurar el servicio (functional options).
@@ -39,12 +43,14 @@ func ConDedupWindow(d time.Duration) Option {
 }
 
 // NewOrderService crea un OrderService listo para usar.
+// gs puede ser nil si no se necesita notify outbound (tests unitarios).
 func NewOrderService(repo ports.OrderRepository, pvs ports.PVSClient,
-	syncLog ports.SyncLogRepo, opts ...Option) *OrderService {
+	syncLog ports.SyncLogRepo, gs ports.GSClient, opts ...Option) *OrderService {
 	s := &OrderService{
 		orderRepo:   repo,
 		pvsClient:   pvs,
 		syncLogRepo: syncLog,
+		gsClient:    gs,
 		qrExpiry:    180 * time.Second,
 		dedupWindow: 20 * time.Second,
 	}
@@ -54,35 +60,109 @@ func NewOrderService(repo ports.OrderRepository, pvs ports.PVSClient,
 	return s
 }
 
-// --- Tipos de request/response ---
+// FormatGSTime formatea timestamps al estilo GS: yyyy-MM-dd HH:mm:ss UTC.
+func FormatGSTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format("2006-01-02 15:04:05")
+}
 
-// CreateOrderRequest es lo que GS nos envía cuando un cliente elige un producto.
+// --- Tipos de request/response (GS Open API v2) ---
+
+// CreateOrderRequest es el body de POST /order/qr.
 type CreateOrderRequest struct {
-	ObjectID    string `json:"objectId"`     // SKU del producto
-	Subject     string `json:"subject"`      // Descripción
-	TotalAmount string `json:"totalAmount"`  // Monto como string ("150.00")
-	DeviceID    string `json:"deviceId"`     // ID del dispositivo GS
-	DeviceNo    string `json:"deviceNo"`     // Número de serie
-	PayMethod   string `json:"payMethod"`    // Método de pago (ej: "wxpay")
-	WayCode     string `json:"wayCode"`      // Código de vía (ej: "qr")
+	OrderNo     string `json:"orderNo"`     // serial de GS (requerido)
+	ObjectID    string `json:"objectId"`    // SKU (opcional en v2)
+	Subject     string `json:"subject"`     // nombre del producto (requerido)
+	Attach      string `json:"attach"`      // deviceNo=...&deviceId=...
+	TotalAmount string `json:"totalAmount"` // monto string ("150.00")
+	NotifyURL   string `json:"notifyUrl"`   // callback de pago hacia GS
 }
 
-// CreateOrderResponse es lo que le devolvemos a GS.
+// CreateOrderResponse es data de POST /order/qr.
 type CreateOrderResponse struct {
-	QrURL        string `json:"qrUrl"`        // base64 del QR (traducido de PVS qrImage)
-	OrderStatus  int    `json:"orderStatus"`  // 1 = pendiente de pago
-	ThirdOrderNo string `json:"thirdOrderNo"` // nuestro orderNo
+	QrURL        string `json:"qrUrl"`        // base64 del QR (PVS qrImage → qrUrl)
+	OrderStatus  string `json:"orderStatus"`  // "1" = pendiente de pago
+	ThirdOrderNo string `json:"thirdOrderNo"` // nuestro id
 }
 
-// QueryStatusRequest es el polling de GS: nos pregunta el estado de una orden.
+// QueryStatusRequest es el body de POST /order/status.
 type QueryStatusRequest struct {
-	ThirdOrderNo string `json:"thirdOrderNo"` // nuestro orderNo
+	OrderNo      string `json:"orderNo"`      // serial GS
+	ThirdOrderNo string `json:"thirdOrderNo"` // nuestro id
 }
 
-// QueryStatusResponse devuelve el estado traducido al formato 1-6 de GS.
+// QueryStatusResponse es data de POST /order/status.
 type QueryStatusResponse struct {
-	OrderStatus  int    `json:"orderStatus"`  // 1-6 segun DOCX seccion 2.3
+	OrderNo      string `json:"orderNo"`
 	ThirdOrderNo string `json:"thirdOrderNo"`
+	OrderStatus  string `json:"orderStatus"` // "1"…"6"
+}
+
+// FlexibleStatus acepta orderStatus como int o string en JSON.
+type FlexibleStatus string
+
+// UnmarshalJSON tolera "2" o 2.
+func (f *FlexibleStatus) UnmarshalJSON(b []byte) error {
+	b = bytesTrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
+		*f = ""
+		return nil
+	}
+	if b[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		*f = FlexibleStatus(s)
+		return nil
+	}
+	var n json.Number
+	if err := json.Unmarshal(b, &n); err != nil {
+		return err
+	}
+	*f = FlexibleStatus(n.String())
+	return nil
+}
+
+func bytesTrimSpace(b []byte) []byte {
+	return []byte(strings.TrimSpace(string(b)))
+}
+
+// CompleteOrderRequest es el body de POST /order/complete.
+type CompleteOrderRequest struct {
+	OrderNo        string         `json:"orderNo"`
+	ThirdOrderNo   string         `json:"thirdOrderNo"`
+	Success        bool           `json:"success"`
+	OrderStatus    FlexibleStatus `json:"orderStatus"`
+	OutStockStatus int            `json:"outStockStatus"`
+	OutStockTime   string         `json:"outStockTime"`
+}
+
+// CompleteOrderResponse es data de POST /order/complete.
+type CompleteOrderResponse struct {
+	OrderNo      string `json:"orderNo"`
+	ThirdOrderNo string `json:"thirdOrderNo"`
+	ReturnCode   string `json:"returnCode"`
+	ReturnMsg    string `json:"returnMsg"`
+}
+
+// CancelOrderRequest es el body de POST /order/cancel.
+type CancelOrderRequest struct {
+	OrderNo      string         `json:"orderNo"`
+	ThirdOrderNo string         `json:"thirdOrderNo"`
+	OrderStatus  FlexibleStatus `json:"orderStatus"` // 0 = cancel
+	Remark       string         `json:"remark"`
+	CancelTime   string         `json:"cancelTime"`
+}
+
+// CancelOrderResponse es data de POST /order/cancel.
+type CancelOrderResponse struct {
+	OrderNo      string `json:"orderNo"`
+	ThirdOrderNo string `json:"thirdOrderNo"`
+	ReturnCode   string `json:"returnCode"`
+	ReturnMsg    string `json:"returnMsg"`
 }
 
 // PVSWebhookRequest es lo que PVS nos envia cuando cambia el estado de un QR.
@@ -91,17 +171,21 @@ type PVSWebhookRequest struct {
 	StateID int    `json:"stateId"` // 6=In Process, 5=Approved, 4=Reverse, 3=Rejected
 }
 
-// CreateOrder ejecuta el flujo completo de creación de orden:
-// 1. Validar request
-// 2. Dedup: ¿ya tenemos una orden idéntica en los últimos 20s?
-// 3. Crear orden en DB con status=RECEIVED
-// 4. Llamar a PVS para generar QR
-// 5. Actualizar orden con qrId + qrImage + status=QR_SHOWN
-// 6. Devolver respuesta a GS (con traducción qrImage→qrUrl)
+// CreateOrder ejecuta POST /order/qr (GS Open API v2):
+// 1. Validar orderNo, subject, totalAmount, notifyUrl
+// 2. Idempotencia por gs_order_no si ya hay QR_SHOWN
+// 3. Crear orden (third_order_no nuestro + gs_order_no + notify_url)
+// 4. PVS GenerateQR
+// 5. QR_SHOWN + respuesta {qrUrl, orderStatus:"1", thirdOrderNo}
 func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest) (*CreateOrderResponse, error) {
-	// 1. Validar
-	if req.ObjectID == "" {
-		return nil, fmt.Errorf("%w: objectId es obligatorio", domain.ErrInvalidInput)
+	if req.OrderNo == "" {
+		return nil, fmt.Errorf("%w: orderNo es obligatorio", domain.ErrInvalidInput)
+	}
+	if req.Subject == "" {
+		return nil, fmt.Errorf("%w: subject es obligatorio", domain.ErrInvalidInput)
+	}
+	if req.NotifyURL == "" {
+		return nil, fmt.Errorf("%w: notifyUrl es obligatorio", domain.ErrInvalidInput)
 	}
 	if req.TotalAmount == "" {
 		return nil, fmt.Errorf("%w: totalAmount es obligatorio", domain.ErrInvalidInput)
@@ -114,50 +198,46 @@ func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest)
 		return nil, domain.ErrInvalidAmount
 	}
 
-	// 2. Dedup: buscar orden reciente con mismo dispositivo+producto+precio
-	existente := s.buscarOrdenReciente(ctx, req.DeviceID, req.ObjectID, montoCentavos)
-	if existente != nil && existente.PvsQrImage != "" {
-		// Ya tenemos una orden para este pedido → devolver el mismo QR
-		return &CreateOrderResponse{
-			QrURL:        existente.PvsQrImage,
-			OrderStatus:  1,
-			ThirdOrderNo: existente.OrderNo,
-		}, nil
+	deviceNo, deviceID := parseAttach(req.Attach)
+
+	// Idempotencia: mismo orderNo de GS ya mostrado → mismo QR
+	if existente, err := s.orderRepo.GetByGsOrderNo(ctx, req.OrderNo); err == nil && existente != nil {
+		if existente.PvsQrImage != "" {
+			return &CreateOrderResponse{
+				QrURL:        existente.PvsQrImage,
+				OrderStatus:  "1",
+				ThirdOrderNo: existente.ThirdOrderNo,
+			}, nil
+		}
 	}
 
-	// 3. Generar orderNo único
-	orderNo := generarOrderNo()
-
-	// 4. Crear orden en DB
+	thirdOrderNo := generarThirdOrderNo()
 	orden := &domain.Order{
-		OrderNo:    orderNo,
-		DeviceID:   req.DeviceID,
-		DeviceNo:   req.DeviceNo,
-		ObjectID:   req.ObjectID,
-		PriceCents: montoCentavos,
-		PayMethod:  req.PayMethod,
-		WayCode:    req.WayCode,
-		Status:     domain.OrderReceived,
+		ThirdOrderNo: thirdOrderNo,
+		GsOrderNo:    req.OrderNo,
+		DeviceID:     deviceID,
+		DeviceNo:     deviceNo,
+		ObjectID:     req.ObjectID,
+		PriceCents:   montoCentavos,
+		NotifyURL:    req.NotifyURL,
+		Status:       domain.OrderReceived,
 	}
 	if err := s.orderRepo.Create(ctx, orden); err != nil {
 		return nil, fmt.Errorf("creando orden en DB: %w", err)
 	}
 
-	// 5. Llamar a PVS para generar QR
 	pvsResp, err := s.pvsClient.GenerateQR(ctx, &ports.PVSQRRequest{
 		Amount:     montoCentavos,
-		ExternalID: orderNo,
-		Reference:  orderNo,
+		ExternalID: thirdOrderNo,
+		Reference:  thirdOrderNo,
 	})
 	if err != nil {
-		// PVS falló → marcar orden como FAILED y devolver error
-		_ = s.orderRepo.UpdateStatus(ctx, orderNo, domain.OrderFailed)
+		_ = s.orderRepo.UpdateStatus(ctx, thirdOrderNo, domain.OrderFailed)
 		return nil, fmt.Errorf("generando QR en PVS: %w", err)
 	}
 
-	// 6. Actualizar orden con datos del QR
 	expira := time.Now().Add(s.qrExpiry)
-	err = s.orderRepo.UpdateStatusAndFields(ctx, orderNo, domain.OrderQRShown, map[string]interface{}{
+	err = s.orderRepo.UpdateStatusAndFields(ctx, thirdOrderNo, domain.OrderQRShown, map[string]interface{}{
 		"pvs_qr_id":       pvsResp.QrID,
 		"pvs_qr_image":    pvsResp.QrImage,
 		"qr_generated_at": time.Now(),
@@ -167,42 +247,45 @@ func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest)
 		return nil, fmt.Errorf("actualizando orden con QR: %w", err)
 	}
 
-	// 7. Log de auditoría (best-effort, no falla el flujo)
 	_ = s.syncLogRepo.Insert(ctx, &ports.SyncLogEntry{
-		OrderNo:   orderNo,
-		Vendor:    "PVS",
-		Direction: "outbound",
-		Endpoint:  "/qr/pvs",
-		Method:    "POST",
+		ThirdOrderNo: thirdOrderNo,
+		Vendor:       "PVS",
+		Direction:    "outbound",
+		Endpoint:     "/qr/pvs",
+		Method:       "POST",
 	})
 
-	// 8. Respuesta a GS
-	// TRADUCCIÓN CLAVE: PVS devuelve qrImage, GS espera qrUrl.
-	// El contenido es el mismo (base64 PNG).
+	// PVS qrImage → GS qrUrl (mismo base64)
 	return &CreateOrderResponse{
 		QrURL:        pvsResp.QrImage,
-		OrderStatus:  1, // pendiente de pago
-		ThirdOrderNo: orderNo,
+		OrderStatus:  "1",
+		ThirdOrderNo: thirdOrderNo,
 	}, nil
 }
 
-// QueryStatus responde al polling de GS.
-// GS nos pregunta "¿en qué estado está esta orden?" y le devolvemos
-// nuestro estado interno traducido al formato 1-6 que entiende la máquina.
-// No llamamos a PVS: devolvemos lo que sabemos de nuestra DB.
+// QueryStatus responde POST /order/status (GS Open API v2).
+// Requiere orderNo (GS) + thirdOrderNo (nuestro) y valida que el par coincida.
+// No llama a PVS: devuelve el estado de nuestra DB mapeado a "1"…"6".
 func (s *OrderService) QueryStatus(ctx context.Context, req *QueryStatusRequest) (*QueryStatusResponse, error) {
+	if req.OrderNo == "" {
+		return nil, fmt.Errorf("%w: orderNo es obligatorio", domain.ErrInvalidInput)
+	}
 	if req.ThirdOrderNo == "" {
 		return nil, fmt.Errorf("%w: thirdOrderNo es obligatorio", domain.ErrInvalidInput)
 	}
 
-	orden, err := s.orderRepo.GetByOrderNo(ctx, req.ThirdOrderNo)
+	orden, err := s.orderRepo.GetByThirdOrderNo(ctx, req.ThirdOrderNo)
 	if err != nil {
 		return nil, fmt.Errorf("buscando orden %q: %w", req.ThirdOrderNo, err)
 	}
+	if orden.GsOrderNo != req.OrderNo {
+		return nil, fmt.Errorf("%w: orderNo no coincide con la orden", domain.ErrInvalidInput)
+	}
 
 	return &QueryStatusResponse{
-		OrderStatus:  int(orden.Status.ToGSStatus()),
-		ThirdOrderNo: orden.OrderNo,
+		OrderNo:      orden.GsOrderNo,
+		ThirdOrderNo: orden.ThirdOrderNo,
+		OrderStatus:  strconv.Itoa(int(orden.Status.ToGSStatus())),
 	}, nil
 }
 
@@ -247,7 +330,7 @@ func (s *OrderService) HandlePVSWebhook(ctx context.Context, req *PVSWebhookRequ
 	if nuevoEstado == domain.OrderPaymentConfirmed {
 		fields["payment_confirmed_at"] = time.Now()
 	}
-	updated, err := s.orderRepo.UpdateStatusGuardedAndFields(ctx, orden.OrderNo,
+	updated, err := s.orderRepo.UpdateStatusGuardedAndFields(ctx, orden.ThirdOrderNo,
 		orden.Status, nuevoEstado, fields)
 	if err != nil {
 		return fmt.Errorf("actualizando orden a %s: %w", nuevoEstado, err)
@@ -259,58 +342,192 @@ func (s *OrderService) HandlePVSWebhook(ctx context.Context, req *PVSWebhookRequ
 
 	// 5. Audit log (best-effort, no falla el flujo)
 	_ = s.syncLogRepo.Insert(ctx, &ports.SyncLogEntry{
-		OrderNo:   orden.OrderNo,
-		Vendor:    "PVS",
-		Direction: "inbound",
-		Endpoint:  "/webhook/pvs",
-		Method:    "POST",
+		ThirdOrderNo: orden.ThirdOrderNo,
+		Vendor:       "PVS",
+		Direction:    "inbound",
+		Endpoint:     "/webhook/pvs",
+		Method:       "POST",
 	})
+
+	// 6. Notify outbound a GS (solo pago confirmado; best-effort)
+	if nuevoEstado == domain.OrderPaymentConfirmed {
+		orden.Status = domain.OrderPaymentConfirmed
+		if orden.PaymentConfirmedAt.IsZero() {
+			orden.PaymentConfirmedAt = time.Now()
+		}
+		s.NotifyPaymentIfNeeded(ctx, orden)
+	}
 
 	return nil
 }
 
-// CompleteOrder: GS notifica que el producto fue entregado (outStockStatus=2).
-// Transicion: PAYMENT_CONFIRMED → DONE.
-// Setea gs_completed_at para reconciliacion.
-func (s *OrderService) CompleteOrder(ctx context.Context, thirdOrderNo string) error {
-	if thirdOrderNo == "" {
-		return fmt.Errorf("%w: thirdOrderNo es obligatorio", domain.ErrInvalidInput)
+// NotifyPaymentIfNeeded avisa a GS el pago exitoso (orderStatus "2").
+// Best-effort: errores se loguean y dejan gs_notified_at en null para retry.
+// El reconciler reusa este metodo para reintentos de notify fallidos.
+func (s *OrderService) NotifyPaymentIfNeeded(ctx context.Context, orden *domain.Order) {
+	if s.gsClient == nil || orden == nil {
+		return
+	}
+	if orden.NotifyURL == "" || !orden.GsNotifiedAt.IsZero() {
+		return
+	}
+	// Solo pago confirmado (status "2" en el contrato GS).
+	if orden.Status != domain.OrderPaymentConfirmed {
+		return
 	}
 
-	orden, err := s.orderRepo.GetByOrderNo(ctx, thirdOrderNo)
+	payTime := orden.PaymentConfirmedAt
+	if payTime.IsZero() {
+		payTime = time.Now()
+	}
+	orderTime := orden.CreatedAt
+	if orderTime.IsZero() {
+		orderTime = payTime
+	}
+
+	resp, err := s.gsClient.NotifyPayment(ctx, &ports.GSNotifyPaymentRequest{
+		NotifyURL:    orden.NotifyURL,
+		OrderNo:      orden.GsOrderNo,
+		ThirdOrderNo: orden.ThirdOrderNo,
+		OrderStatus:  "2",
+		OrderTime:    FormatGSTime(orderTime),
+		PayTime:      FormatGSTime(payTime),
+		TotalAmount:  fmt.Sprintf("%d.%02d", orden.PriceCents/100, orden.PriceCents%100),
+	})
 	if err != nil {
-		return fmt.Errorf("buscando orden %q: %w", thirdOrderNo, err)
+		slog.Error("notify a GS fallo", "thirdOrderNo", orden.ThirdOrderNo, "error", err)
+		return
+	}
+	if resp != nil && resp.ReturnCode != "" && resp.ReturnCode != "success" {
+		slog.Error("notify a GS returnCode no exitoso",
+			"thirdOrderNo", orden.ThirdOrderNo, "returnCode", resp.ReturnCode)
+		return
 	}
 
-	if !orden.Status.CanTransitionTo(domain.OrderDone) {
-		return fmt.Errorf("%w: orden %s en estado %q no se puede completar",
-			domain.ErrInvalidTransition, thirdOrderNo, orden.Status)
+	now := time.Now()
+	if err := s.orderRepo.UpdateStatusAndFields(ctx, orden.ThirdOrderNo, orden.Status,
+		map[string]interface{}{"gs_notified_at": now}); err != nil {
+		slog.Error("marcando gs_notified_at", "thirdOrderNo", orden.ThirdOrderNo, "error", err)
+		return
 	}
-
-	return s.orderRepo.UpdateStatusAndFields(ctx, thirdOrderNo, domain.OrderDone,
-		map[string]interface{}{"gs_completed_at": time.Now()})
+	orden.GsNotifiedAt = now
+	slog.Info("notify a GS ok", "thirdOrderNo", orden.ThirdOrderNo, "gsOrderNo", orden.GsOrderNo)
 }
 
-// CancelOrder: GS cancela la orden.
-// Transicion: QR_SHOWN o PAYMENT_CONFIRMED → CANCELLED.
-// Setea gs_cancelled_at.
-func (s *OrderService) CancelOrder(ctx context.Context, thirdOrderNo string) error {
-	if thirdOrderNo == "" {
-		return fmt.Errorf("%w: thirdOrderNo es obligatorio", domain.ErrInvalidInput)
+// CompleteOrder: GS notifica resultado de preparacion/entrega (POST /order/complete).
+// success+outStockStatus=2 → DONE; success=false → FAILED (refundable si hubo pago).
+// returnCode refleja si procesamos el notify, no el exito de la bebida.
+func (s *OrderService) CompleteOrder(ctx context.Context, req *CompleteOrderRequest) (*CompleteOrderResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("%w: request nulo", domain.ErrInvalidInput)
+	}
+	if req.OrderNo == "" {
+		return nil, fmt.Errorf("%w: orderNo es obligatorio", domain.ErrInvalidInput)
+	}
+	if req.ThirdOrderNo == "" {
+		return nil, fmt.Errorf("%w: thirdOrderNo es obligatorio", domain.ErrInvalidInput)
 	}
 
-	orden, err := s.orderRepo.GetByOrderNo(ctx, thirdOrderNo)
+	orden, err := s.orderRepo.GetByThirdOrderNo(ctx, req.ThirdOrderNo)
 	if err != nil {
-		return fmt.Errorf("buscando orden %q: %w", thirdOrderNo, err)
+		return nil, fmt.Errorf("buscando orden %q: %w", req.ThirdOrderNo, err)
+	}
+	if orden.GsOrderNo != req.OrderNo {
+		return nil, fmt.Errorf("%w: pair mismatch orderNo %q vs gs_order_no %q",
+			domain.ErrInvalidInput, req.OrderNo, orden.GsOrderNo)
+	}
+
+	var (
+		nuevo  domain.OrderStatus
+		fields map[string]interface{}
+		retMsg = "success"
+	)
+	switch {
+	case req.Success && req.OutStockStatus == 2:
+		nuevo = domain.OrderDone
+		fields = map[string]interface{}{"gs_completed_at": time.Now()}
+	case !req.Success:
+		nuevo = domain.OrderFailed
+		fields = map[string]interface{}{
+			"failure_reason": "gs_complete_success=false",
+		}
+		retMsg = "gs_complete_success=false"
+	default:
+		return nil, fmt.Errorf("%w: success=true requiere outStockStatus=2, got %d",
+			domain.ErrInvalidInput, req.OutStockStatus)
+	}
+
+	if !orden.Status.CanTransitionTo(nuevo) {
+		return nil, fmt.Errorf("%w: orden %s en estado %q no puede ir a %q",
+			domain.ErrInvalidTransition, req.ThirdOrderNo, orden.Status, nuevo)
+	}
+
+	if err := s.orderRepo.UpdateStatusAndFields(ctx, req.ThirdOrderNo, nuevo, fields); err != nil {
+		return nil, err
+	}
+
+	return &CompleteOrderResponse{
+		OrderNo:      orden.GsOrderNo,
+		ThirdOrderNo: orden.ThirdOrderNo,
+		ReturnCode:   "success",
+		ReturnMsg:    retMsg,
+	}, nil
+}
+
+// CancelOrder: GS cancela la orden (POST /order/cancel).
+// Idempotente si ya esta CANCELLED.
+func (s *OrderService) CancelOrder(ctx context.Context, req *CancelOrderRequest) (*CancelOrderResponse, error) {
+	if req == nil {
+		return nil, fmt.Errorf("%w: request nulo", domain.ErrInvalidInput)
+	}
+	if req.OrderNo == "" {
+		return nil, fmt.Errorf("%w: orderNo es obligatorio", domain.ErrInvalidInput)
+	}
+	if req.ThirdOrderNo == "" {
+		return nil, fmt.Errorf("%w: thirdOrderNo es obligatorio", domain.ErrInvalidInput)
+	}
+	if req.CancelTime == "" {
+		return nil, fmt.Errorf("%w: cancelTime es obligatorio", domain.ErrInvalidInput)
+	}
+
+	orden, err := s.orderRepo.GetByThirdOrderNo(ctx, req.ThirdOrderNo)
+	if err != nil {
+		return nil, fmt.Errorf("buscando orden %q: %w", req.ThirdOrderNo, err)
+	}
+	if orden.GsOrderNo != req.OrderNo {
+		return nil, fmt.Errorf("%w: pair mismatch orderNo %q vs gs_order_no %q",
+			domain.ErrInvalidInput, req.OrderNo, orden.GsOrderNo)
+	}
+
+	// Idempotente: ya cancelada.
+	if orden.Status == domain.OrderCancelled {
+		return &CancelOrderResponse{
+			OrderNo:      orden.GsOrderNo,
+			ThirdOrderNo: orden.ThirdOrderNo,
+			ReturnCode:   "success",
+			ReturnMsg:    req.Remark,
+		}, nil
 	}
 
 	if !orden.Status.CanTransitionTo(domain.OrderCancelled) {
-		return fmt.Errorf("%w: orden %s en estado %q no se puede cancelar",
-			domain.ErrInvalidTransition, thirdOrderNo, orden.Status)
+		return nil, fmt.Errorf("%w: orden %s en estado %q no se puede cancelar",
+			domain.ErrInvalidTransition, req.ThirdOrderNo, orden.Status)
 	}
 
-	return s.orderRepo.UpdateStatusAndFields(ctx, thirdOrderNo, domain.OrderCancelled,
-		map[string]interface{}{"gs_cancelled_at": time.Now()})
+	fields := map[string]interface{}{"gs_cancelled_at": time.Now()}
+	if req.Remark != "" {
+		fields["failure_reason"] = req.Remark
+	}
+	if err := s.orderRepo.UpdateStatusAndFields(ctx, req.ThirdOrderNo, domain.OrderCancelled, fields); err != nil {
+		return nil, err
+	}
+
+	return &CancelOrderResponse{
+		OrderNo:      orden.GsOrderNo,
+		ThirdOrderNo: orden.ThirdOrderNo,
+		ReturnCode:   "success",
+		ReturnMsg:    req.Remark,
+	}, nil
 }
 
 // pvsStatusToOrderStatus elige el estado interno objetivo para un PVSStatus.
@@ -348,6 +565,21 @@ func (s *OrderService) buscarOrdenReciente(ctx context.Context, deviceID, object
 	return orden
 }
 
+// parseAttach interpreta attach de GS: "deviceNo=E00375&deviceId=7678...".
+func parseAttach(attach string) (deviceNo, deviceID string) {
+	attach = strings.TrimSpace(attach)
+	if attach == "" {
+		return "", ""
+	}
+	// url.ParseQuery espera query sin "?"; toleramos un "?" inicial.
+	q := strings.TrimPrefix(attach, "?")
+	vals, err := url.ParseQuery(q)
+	if err != nil {
+		return "", ""
+	}
+	return vals.Get("deviceNo"), vals.Get("deviceId")
+}
+
 // parseMonto convierte un string como "150.00" a centavos int64 (15000).
 // Acepta formatos: "150", "150.00", "150.5", "150,50" (coma decimal).
 func parseMonto(s string) (int64, error) {
@@ -363,8 +595,8 @@ func parseMonto(s string) (int64, error) {
 	return centavos, nil
 }
 
-// generarOrderNo genera un identificador único para la orden.
+// generarThirdOrderNo genera un identificador único para la orden.
 // Usa UUID v4. En el futuro se puede migrar a UUID v7 (time-sortable).
-func generarOrderNo() string {
+func generarThirdOrderNo() string {
 	return "ORD-" + uuid.New().String()
 }

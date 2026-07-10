@@ -60,10 +60,10 @@ func main() {
 	// 5. Clientes externos
 	pvsClient := pvsclient.New(cfg.PVSBaseURL, cfg.PVSClientID, cfg.PVSClientSecret,
 		pvsclient.ConRateLimit(50, 50))
-	_ = gsclient.New(cfg.GSBaseURL, cfg.GSKey, cfg.GSSecret) // reservado para PR5
+	gsClient := gsclient.New(cfg.GSBaseURL, cfg.GSKey, cfg.GSSecret)
 
 	// 6. Servicios
-	orderSvc := service.NewOrderService(orderRepo, pvsClient, syncLogRepo,
+	orderSvc := service.NewOrderService(orderRepo, pvsClient, syncLogRepo, gsClient,
 		service.ConQRExpiry(cfg.QRExpiry))
 	refundSvc := service.NewRefundService(orderRepo, pvsClient, refundRepo, syncLogRepo)
 
@@ -73,7 +73,7 @@ func main() {
 
 	// 8. Reconciler (opcional, ver RECONCILER_ENABLED)
 	if cfg.ReconcilerEnabled {
-		rec := reconciler.New(reconcilerStore, orderRepo, pvsClient,
+		rec := reconciler.New(reconcilerStore, orderRepo, pvsClient, orderSvc,
 			cfg.ReconcilerInterval)
 		go rec.Run(context.Background())
 		slog.Info("reconciler iniciado en background",
