@@ -1,29 +1,28 @@
 {
 	"info": {
 		"_postman_id": "7fa72605-cb41-477d-9447-1f48fa134d19",
-		"name": "vps-powermix (Bridge GS-PVS)",
-		"description": "Colección de requests de Postman para simular los flujos de la máquina expendedora GSWYIT (GS), los webhooks de PVS, y endpoints administrativos del mock local.",
+		"name": "vps-powermix (Bridge GS-PVS) — GS Open API v2",
+		"description": "Colección GS Payment Open API v2 + webhooks PVS. Envelope {code,msg,data}. Paths /order/*.",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
 	"item": [
 		{
-			"name": "GS API Simulation",
+			"name": "GS API v2",
 			"item": [
 				{
-					"name": "1. Crear Orden (GS -> Bridge)",
+					"name": "1. Create order POST /order/qr",
 					"event": [
 						{
 							"listen": "test",
 							"script": {
 								"exec": [
 									"const response = pm.response.json();",
-									"if (response.thirdOrderNo) {",
-									"    pm.environment.set(\"thirdOrderNo\", response.thirdOrderNo);",
-									"    pm.environment.set(\"qrId\", \"qr-\" + response.thirdOrderNo);",
-									"    console.log(\"Variables de entorno actualizadas:\", {",
-									"        thirdOrderNo: response.thirdOrderNo,",
-									"        qrId: \"qr-\" + response.thirdOrderNo",
-									"    });",
+									"const data = response.data || response;",
+									"if (data.thirdOrderNo) {",
+									"    pm.environment.set(\"thirdOrderNo\", data.thirdOrderNo);",
+									"    pm.environment.set(\"orderNo\", pm.variables.get(\"orderNo\") || \"GS-ORDER-001\");",
+									"    pm.environment.set(\"qrId\", \"qr-\" + data.thirdOrderNo);",
+									"    console.log(\"env:\", { thirdOrderNo: data.thirdOrderNo, qrId: \"qr-\" + data.thirdOrderNo });",
 									"}"
 								],
 								"type": "text/javascript"
@@ -33,135 +32,130 @@
 					"request": {
 						"method": "POST",
 						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
+							{ "key": "Content-Type", "value": "application/json", "type": "text" }
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"objectId\": \"drink-001\",\n    \"subject\": \"Coca Cola 500ml\",\n    \"totalAmount\": \"150.00\",\n    \"deviceId\": \"gs-device-001\",\n    \"deviceNo\": \"serial-abc-123\",\n    \"payMethod\": \"wxpay\",\n    \"wayCode\": \"qr\"\n}"
+							"raw": "{\n    \"orderNo\": \"GS-ORDER-001\",\n    \"objectId\": \"drink-001\",\n    \"subject\": \"Coca Cola 500ml\",\n    \"attach\": \"deviceNo=serial-abc-123&deviceId=gs-device-001\",\n    \"totalAmount\": \"150.00\",\n    \"notifyUrl\": \"https://gs.example/notify\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:8080/api/v1/orders",
+							"raw": "http://localhost:8080/order/qr",
 							"protocol": "http",
-							"host": [
-								"localhost"
-							],
+							"host": ["localhost"],
 							"port": "8080",
-							"path": [
-								"api",
-								"v1",
-								"orders"
-							]
+							"path": ["order", "qr"]
 						},
-						"description": "Simula que la máquina GS crea una orden cuando un cliente selecciona un producto. La respuesta de este request almacena automáticamente en el entorno de Postman las variables `thirdOrderNo` y `qrId` para facilitar los siguientes pasos."
+						"description": "GS Open API v2 create. Response data: qrUrl, orderStatus \"1\", thirdOrderNo. Saves thirdOrderNo to env."
 					},
 					"response": []
 				},
 				{
-					"name": "2. Polling de Estado (GS -> Bridge)",
-					"request": {
-						"method": "GET",
-						"header": [],
-						"url": {
-							"raw": "http://localhost:8080/api/v1/orders/{{thirdOrderNo}}",
-							"protocol": "http",
-							"host": [
-								"localhost"
-							],
-							"port": "8080",
-							"path": [
-								"api",
-								"v1",
-								"orders",
-								"{{thirdOrderNo}}"
-							]
-						},
-						"description": "Simula el polling que la máquina expendedora hace de forma repetitiva para saber si la orden fue pagada. El campo `orderStatus` en la respuesta representa el estado traducido para GS (2 = PAYMENT_CONFIRMED/APPROVED)."
-					},
-					"response": []
-				},
-				{
-					"name": "3. Confirmar Entrega (GS -> Bridge)",
-					"request": {
-						"method": "POST",
-						"header": [],
-						"url": {
-							"raw": "http://localhost:8080/api/v1/orders/{{thirdOrderNo}}/complete",
-							"protocol": "http",
-							"host": [
-								"localhost"
-							],
-							"port": "8080",
-							"path": [
-								"api",
-								"v1",
-								"orders",
-								"{{thirdOrderNo}}",
-								"complete"
-							]
-						},
-						"description": "Simula que la máquina informa que el producto fue entregado físicamente con éxito, finalizando el ciclo interno de la orden."
-					},
-					"response": []
-				},
-				{
-					"name": "4. Cancelar Orden (GS -> Bridge)",
-					"request": {
-						"method": "POST",
-						"header": [],
-						"url": {
-							"raw": "http://localhost:8080/api/v1/orders/{{thirdOrderNo}}/cancel",
-							"protocol": "http",
-							"host": [
-								"localhost"
-							],
-							"port": "8080",
-							"path": [
-								"api",
-								"v1",
-								"orders",
-								"{{thirdOrderNo}}",
-								"cancel"
-							]
-						},
-						"description": "Simula la cancelación voluntaria (el cliente cancela en la pantalla de la máquina antes de pagar)."
-					},
-					"response": []
-				},
-				{
-					"name": "5. Solicitar Reembolso (GS -> Bridge)",
+					"name": "2. Query status POST /order/status",
 					"request": {
 						"method": "POST",
 						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
+							{ "key": "Content-Type", "value": "application/json", "type": "text" }
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"refundNo\": \"ref-{{thirdOrderNo}}\",\n    \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n    \"refundAmount\": \"150.00\",\n    \"refundReason\": \"Bebida trabada en la espiral\"\n}"
+							"raw": "{\n    \"orderNo\": \"GS-ORDER-001\",\n    \"thirdOrderNo\": \"{{thirdOrderNo}}\"\n}"
 						},
 						"url": {
-							"raw": "http://localhost:8080/api/v1/orders/{{thirdOrderNo}}/refund",
+							"raw": "http://localhost:8080/order/status",
 							"protocol": "http",
-							"host": [
-								"localhost"
-							],
+							"host": ["localhost"],
 							"port": "8080",
-							"path": [
-								"api",
-								"v1",
-								"orders",
-								"{{thirdOrderNo}}",
-								"refund"
-							]
+							"path": ["order", "status"]
 						},
-						"description": "Simula que la máquina solicita un reembolso tras una falla al dispensar la bebida que ya fue cobrada. Invoca al mock de PVS en background."
+						"description": "Pair orderNo + thirdOrderNo. orderStatus string 1-6."
+					},
+					"response": []
+				},
+				{
+					"name": "3. Complete POST /order/complete",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json", "type": "text" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"orderNo\": \"GS-ORDER-001\",\n    \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n    \"success\": true,\n    \"orderStatus\": 2,\n    \"outStockStatus\": 2,\n    \"outStockTime\": \"2026-07-10 12:00:00\"\n}"
+						},
+						"url": {
+							"raw": "http://localhost:8080/order/complete",
+							"protocol": "http",
+							"host": ["localhost"],
+							"port": "8080",
+							"path": ["order", "complete"]
+						},
+						"description": "success+outStockStatus=2 → DONE. success=false → FAILED refundable."
+					},
+					"response": []
+				},
+				{
+					"name": "4. Cancel POST /order/cancel",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json", "type": "text" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"orderNo\": \"GS-ORDER-001\",\n    \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n    \"orderStatus\": 0,\n    \"remark\": \"user cancel\",\n    \"cancelTime\": \"2026-07-10 12:00:00\"\n}"
+						},
+						"url": {
+							"raw": "http://localhost:8080/order/cancel",
+							"protocol": "http",
+							"host": ["localhost"],
+							"port": "8080",
+							"path": ["order", "cancel"]
+						},
+						"description": "Cancel before/after pay when SM allows. Idempotent if already CANCELLED."
+					},
+					"response": []
+				},
+				{
+					"name": "5. Refund POST /order/refund",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json", "type": "text" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"orderNo\": \"GS-ORDER-001\",\n    \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n    \"refundNo\": \"ref-{{thirdOrderNo}}\",\n    \"refundAmount\": \"150.00\",\n    \"refundReason\": \"Bebida trabada en la espiral\"\n}"
+						},
+						"url": {
+							"raw": "http://localhost:8080/order/refund",
+							"protocol": "http",
+							"host": ["localhost"],
+							"port": "8080",
+							"path": ["order", "refund"]
+						},
+						"description": "PVS reverse async. Immediate refundStatus often \"waiting\"."
+					},
+					"response": []
+				},
+				{
+					"name": "6. Refund status POST /order/refundStatus",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json", "type": "text" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"orderNo\": \"GS-ORDER-001\",\n    \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n    \"refundNo\": \"ref-{{thirdOrderNo}}\"\n}"
+						},
+						"url": {
+							"raw": "http://localhost:8080/order/refundStatus",
+							"protocol": "http",
+							"host": ["localhost"],
+							"port": "8080",
+							"path": ["order", "refundStatus"]
+						},
+						"description": "Query refund: pending|success|fail."
 					},
 					"response": []
 				}
@@ -175,11 +169,7 @@
 					"request": {
 						"method": "POST",
 						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
+							{ "key": "Content-Type", "value": "application/json", "type": "text" }
 						],
 						"body": {
 							"mode": "raw",
@@ -188,16 +178,11 @@
 						"url": {
 							"raw": "http://localhost:8080/webhook/pvs",
 							"protocol": "http",
-							"host": [
-								"localhost"
-							],
+							"host": ["localhost"],
 							"port": "8080",
-							"path": [
-								"webhook",
-								"pvs"
-							]
+							"path": ["webhook", "pvs"]
 						},
-						"description": "Simula que PVS llama a nuestro webhook de notificación de pagos cuando el cliente abona (`stateId: 5 = Approved`)."
+						"description": "stateId 5 = Approved. Triggers PAYMENT_CONFIRMED + GS notify best-effort."
 					},
 					"response": []
 				},
@@ -206,11 +191,7 @@
 					"request": {
 						"method": "POST",
 						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
+							{ "key": "Content-Type", "value": "application/json", "type": "text" }
 						],
 						"body": {
 							"mode": "raw",
@@ -219,16 +200,11 @@
 						"url": {
 							"raw": "http://localhost:8080/webhook/pvs",
 							"protocol": "http",
-							"host": [
-								"localhost"
-							],
+							"host": ["localhost"],
 							"port": "8080",
-							"path": [
-								"webhook",
-								"pvs"
-							]
+							"path": ["webhook", "pvs"]
 						},
-						"description": "Simula que PVS llama a nuestro webhook para confirmar la reversión de un pago (`stateId: 4 = Reversed`)."
+						"description": "stateId 4 = Reversed. Confirms refund → REFUNDED."
 					},
 					"response": []
 				}
@@ -242,11 +218,7 @@
 					"request": {
 						"method": "POST",
 						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json",
-								"type": "text"
-							}
+							{ "key": "Content-Type", "value": "application/json", "type": "text" }
 						],
 						"body": {
 							"mode": "raw",
@@ -255,18 +227,11 @@
 						"url": {
 							"raw": "http://localhost:8081/admin/transactions/{{qrId}}/status",
 							"protocol": "http",
-							"host": [
-								"localhost"
-							],
+							"host": ["localhost"],
 							"port": "8081",
-							"path": [
-								"admin",
-								"transactions",
-								"{{qrId}}",
-								"status"
-							]
+							"path": ["admin", "transactions", "{{qrId}}", "status"]
 						},
-						"description": "Actualiza el estado de la transacción en memoria dentro de Mock PVS. Sirve para simular que un pago fue aprobado en PVS pero el webhook de pago se perdió en la red. El reconciliador de fondo del Bridge detectará este estado mediante consulta periódica y lo actualizará automáticamente."
+						"description": "Force PVS state for reconciler lost-webhook tests."
 					},
 					"response": []
 				}
@@ -283,15 +248,10 @@
 						"url": {
 							"raw": "http://localhost:8080/healthz",
 							"protocol": "http",
-							"host": [
-								"localhost"
-							],
+							"host": ["localhost"],
 							"port": "8080",
-							"path": [
-								"healthz"
-							]
-						},
-						"description": "Verificación de salud simple del bridge (valida latencias y pings contra la DB PostgreSQL)."
+							"path": ["healthz"]
+						}
 					},
 					"response": []
 				},
@@ -303,15 +263,10 @@
 						"url": {
 							"raw": "http://localhost:8080/metrics",
 							"protocol": "http",
-							"host": [
-								"localhost"
-							],
+							"host": ["localhost"],
 							"port": "8080",
-							"path": [
-								"metrics"
-							]
-						},
-						"description": "Expone las métricas recolectadas por Prometheus (tiempos de respuesta, volumen de peticiones y estadísticas del reconciliador)."
+							"path": ["metrics"]
+						}
 					},
 					"response": []
 				}

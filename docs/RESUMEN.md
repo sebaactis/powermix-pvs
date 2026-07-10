@@ -14,13 +14,13 @@ Servicio Go que actúa de **bridge** entre la máquina expendedora GSWYIT (GS) y
 
 ```
     ┌─────────────────────┐
-    │  GS (GWYIT Machine) │  ←— POST /api/v1/orders, /api/v1/orders/{orderNo}/query,
-    │  (China, Android)   │      /api/v1/orders/{orderNo}/refund,
-    └──────────┬──────────┘      /api/v1/orders/{orderNo}/complete,
-               │ HTTP (key-md5 signed)  /api/v1/orders/{orderNo}/cancel
+    │  GS (GWYIT Machine) │  ←— POST /order/qr|status|refund|refundStatus|complete|cancel
+    │  (China, Android)   │  →— POST {notifyUrl} payment notify (orderStatus "2")
+    └──────────┬──────────┘
+               │ HTTP (Payment Open API v2 envelope {code,msg,data})
     ┌──────────▼──────────┐
-    │  vps-powermix (Go)  │  5 endpoints inbound + 1 PVS webhook
-    │                     │  + reconciler + sync log + /healthz + /metrics
+    │  vps-powermix (Go)  │  6 endpoints GS inbound + 1 PVS webhook
+    │  (Third Party)      │  + reconciler notify retry + /healthz + /metrics
     └──────────┬──────────┘
                │ HTTP (OAuth2 Bearer)
     ┌──────────▼──────────┐
@@ -29,15 +29,34 @@ Servicio Go que actúa de **bridge** entre la máquina expendedora GSWYIT (GS) y
     └─────────────────────┘
 ```
 
-**Patrón de comunicación: Path A (polling-only).** GS consulta el estado de la orden vía polling. Nosotros nunca enviamos notificaciones de pago a GS.
+**Patrón de comunicación: hybrid.** GS hace polling de estado y además recibimos notify outbound de pago a `notifyUrl` (solo `orderStatus "2"`). Rutas legacy `/api/v1/*` eliminadas.
+
+### Dashboard GS (URLs a configurar)
+
+| Campo dashboard | URL |
+| --- | --- |
+| Order create URL | `https://<host>/order/qr` |
+| Order Query URL | `https://<host>/order/status` |
+| Order Refund URL | `https://<host>/order/refund` |
+| Order Complete URL | `https://<host>/order/complete` |
+| Order Cancel URL | `https://<host>/order/cancel` |
+| (API) Refund status | `https://<host>/order/refundStatus` |
+
+### IDs (no confundir)
+
+| Concepto | Go / SQL | JSON GS |
+| --- | --- | --- |
+| Nuestro id | `ThirdOrderNo` / `third_order_no` | `thirdOrderNo` |
+| Serial de GS | `GsOrderNo` / `gs_order_no` | `orderNo` |
 
 ---
 
 ## ✅ Estado de implementación — COMPLETADO
 
 ### PR1 — Foundation ✅
+
 | Componente | Archivos | Tests | Estado |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `internal/config/` | `config.go`, `config_test.go` | ✅ 5 (19 sub) | ✅ |
 | `internal/domain/` | `order.go`, `status.go`, `money.go`, `errors.go`, `refund.go`, `order_test.go`, `status_test.go` | ✅ | ✅ |
 | `internal/ports/` | `repository.go`, `client_gs.go`, `client_pvs.go`, `health.go`, `ports_test.go` | ✅ | ✅ |
@@ -45,18 +64,21 @@ Servicio Go que actúa de **bridge** entre la máquina expendedora GSWYIT (GS) y
 | `internal/store/` | `order_repo.go`, `idempotency_store.go`, `sync_log_repo.go`, `reconciler_store.go`, `refund_repo.go`, `scanning.go`, `store_test.go` | ✅ (skip sin DB) | ✅ |
 
 ### PR2 — PVS Client ✅
+
 | Componente | Archivos | Tests | Estado |
 |---|---|---|---|
 | `internal/client/pvs/` | `client.go`, `client_test.go` | ✅ 8 | ✅ |
 
 ### PR3 — GS Client ✅
+
 | Componente | Archivos | Tests | Estado |
 |---|---|---|---|
 | `internal/client/gs/` | `client.go`, `client_test.go` | ✅ 6 | ✅ |
 
 ### PR4 — Handlers + State Machine + Reconciler ✅
+
 | Componente | Archivos | Tests | Estado |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `internal/handler/` | `handler.go`, `metrics.go`, `redact.go`, `handler_test.go`, `e2e_test.go`, `security_test.go` | ✅ | ✅ |
 | `internal/service/` | `order_service.go`, `order_service_test.go`, `refund_service.go`, `refund_service_test.go` | ✅ | ✅ |
 | `internal/reconciler/` | `reconciler.go`, `reconciler_test.go` | ✅ | ✅ |
@@ -64,8 +86,9 @@ Servicio Go que actúa de **bridge** entre la máquina expendedora GSWYIT (GS) y
 | `migrations/` | `004_refunds`, `005_reconciler_runs` | ✅ | ✅ |
 
 ### PR5 — Observability + E2E + Tests de Seguridad ✅
+
 | Componente | Detalle | Estado |
-|---|---|---|
+| --- | --- | --- |
 | Reconciler loop completo | Goroutine + ticker, batch de 200, stuck thresholds QR_SHOWN/REFUND_PENDING | ✅ |
 | `slog` redaction handler | `RedactingHandler` en `handler/redact.go` | ✅ |
 | Prometheus metrics | `http_requests_total`, `http_request_duration_seconds`, `pvs_calls_total`, `pvs_call_duration_seconds`, `reconciler_runs_total`, `reconciler_fixed_total` | ✅ |
@@ -79,7 +102,7 @@ Servicio Go que actúa de **bridge** entre la máquina expendedora GSWYIT (GS) y
 ## 📦 Stack
 
 | Capa | Tecnología |
-|---|---|
+| --- | --- |
 | Lenguaje | **Go** |
 | Base de datos | **PostgreSQL** (golang-migrate, sqlx + pgx v5) |
 | HTTP | `net/http` (Go 1.22+ ServeMux) |
@@ -94,15 +117,16 @@ Servicio Go que actúa de **bridge** entre la máquina expendedora GSWYIT (GS) y
 ## 🔑 Decisiones arquitectónicas claves
 
 | Decisión | Detalle |
-|---|---|
-| **Path A (polling)** | GS consulta estado vía polling. Sin webhook de nosotros → GS |
+| --- | --- |
+| **GS Payment Open API v2** | Paths `/order/*`, envelope `{code,msg,data}` |
+| **Hybrid notify** | Polling + notify outbound a `notifyUrl` solo status `"2"` |
 | **Currency ARS fijo** | Solo ARS, sin multi-moneda |
-| **No verify GS key-md5** | GS no ha confirmado que firme sus requests entrantes |
+| **No verify GS key-md5 inbound** | No verificamos firma entrante de GS |
 | **qrImage → qrUrl** | PVS devuelve base64 (qrImage). GS espera qrUrl (base64). Service traduce |
-| **No PVS webhook signature** | Aceptado por riesgo (red cerrada) |
-| **Dedup 20s GS** | `(deviceId + objectId + price_cents)` en ventana de 20s |
-| **Refunds en v1** | GS-driven: GS pide refund → nosotros llamamos PVS reverse |
-| **Comentarios en español** | Por requerimiento del usuario |
+| **complete success=false** | Orden → FAILED refundable (si hubo `payment_confirmed_at`); sin reverse auto PVS |
+| **refundStatus waiting/pending** | Reverse async: `/order/refund` → `waiting`; query → `pending`/`success`/`fail` |
+| **No dual legacy** | Sin `/api/v1/orders*` |
+| **Comentarios en español** | Identifiers en inglés |
 
 ---
 
@@ -136,7 +160,7 @@ go test ./...
 ```
 
 | Paquete | Resultado |
-|---|---|
+| --- | --- |
 | `internal/client/gs` | ✅ ok |
 | `internal/client/pvs` | ✅ ok |
 | `internal/config` | ✅ ok |

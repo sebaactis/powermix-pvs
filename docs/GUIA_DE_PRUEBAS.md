@@ -1,174 +1,204 @@
-# 🧪 Guía de Pruebas Locales (API + PVS Mock)
+# Guía de Pruebas Locales (API + PVS Mock) — GS Open API v2
 
-Esta guía describe cómo probar todo el ciclo de vida del servicio `vps-powermix` de forma local, simulando tanto las interacciones de la máquina expendedora GSWYIT (GS) como el comportamiento del proveedor PVS mediante un mock server dedicado.
+Esta guía describe cómo probar el ciclo de vida de `vps-powermix` localmente con **Payment Open API v2** (`/order/*`, envelope `{code,msg,data}`).
 
 ---
 
-## 🚀 Camino Rápido (Quick Setup)
+## Camino Rápido
 
-1. **Configuración Inicial:**
-   Copia el archivo `.env.example` a `.env` y configura tu string de conexión a PostgreSQL en `DATABASE_URL`.
-   ```bash
-   cp .env.example .env
-   ```
+1. **Config:** copiá `.env.example` → `.env` y setea `DATABASE_URL`.
+2. **Migraciones:** corré las migraciones bajo `migrations/` (incluye campos GS v2: `gs_order_no`, `notify_url`, `gs_notified_at`, rename `third_order_no`).
+3. **Mock PVS:**
 
-2. **Levantar base de datos y correr migraciones:**
-   Asegúrate de tener la DB Postgres creada y ejecuta las migraciones (`migrations/`).
-
-3. **Iniciar el servidor Mock de PVS:**
    ```bash
    go run cmd/mockpvs/main.go
    ```
-   *Escuchará en `http://localhost:8081`.*
 
-4. **Iniciar el servidor del Bridge (vps-powermix):**
-   *(Asegúrate de exportar las variables de entorno de tu `.env`)*
+   Escucha en `http://localhost:8081`.
+4. **Bridge:**
+
    ```bash
-   # En Linux/macOS
-   export $(cat .env | xargs) && go run cmd/server/main.go
-   
-   # En Windows (PowerShell)
-   Get-Content .env | Foreach-Object {
-       if ($_ -match "([^=]+)=(.*)") {
-           [System.Environment]::SetEnvironmentVariable($Matches[1], $Matches[2])
-       }
-   }
    go run cmd/server/main.go
    ```
-   *Escuchará en `http://localhost:8080`.*
+
+   Escucha en `http://localhost:8080`.
 
 ---
 
-## 🔄 Secuencias de Pruebas (Flujos de Negocio)
+## Dashboard GS (checklist de URLs)
 
-Actuaremos en rol de la máquina expendedora GS usando comandos `curl`.
+Configurá en el panel de la máquina:
 
-### 1. Flujo Feliz (Compra y Entrega)
+| Campo | URL |
+| --- | --- |
+| Order create URL | `https://<host>/order/qr` |
+| Order Query URL | `https://<host>/order/status` |
+| Order Refund URL | `https://<host>/order/refund` |
+| Order Complete URL | `https://<host>/order/complete` |
+| Order Cancel URL | `https://<host>/order/cancel` |
 
-El cliente selecciona una bebida, paga el código QR generado, y la máquina entrega el producto.
+Opcional API: `POST /order/refundStatus`.
 
-#### Paso A: Crear la orden (GS -> Nosotros)
+**IDs:** `orderNo` = serial de GS · `thirdOrderNo` = nuestro id.
+
+---
+
+## Flujos
+
+### 1. Feliz: create → pay → status → complete
+
+#### A. Create (`POST /order/qr`)
+
 ```bash
-curl -X POST http://localhost:8080/api/v1/orders \
+curl -X POST http://localhost:8080/order/qr \
   -H "Content-Type: application/json" \
-  -d '{"objectId":"bebida-001","totalAmount":"150.00","deviceId":"maquina-local-1"}'
+  -d '{
+    "orderNo":"GS-LOCAL-001",
+    "objectId":"bebida-001",
+    "subject":"Batido",
+    "attach":"deviceNo=E001&deviceId=maquina-local-1",
+    "totalAmount":"150.00",
+    "notifyUrl":"https://gs.example/notify"
+  }'
 ```
-* **Respuesta Esperada (200 OK):**
-  ```json
-  {"qrUrl":"iVBORw0KGgoAAAANS...","orderStatus":1,"thirdOrderNo":"ORD-<UUID>"}
-  ```
-  *(Copia el `thirdOrderNo` y el id de QR que figura en la consola del mock de PVS, por ejemplo `qr-ORD-<UUID>`)*
 
-#### Paso B: Simular Pago Aprobado (PVS Webhook -> Nosotros)
-PVS notifica que el pago del QR fue aprobado (`stateId: 5`).
+Respuesta esperada (envelope):
+
+```json
+{"code":200,"msg":"...","data":{"qrUrl":"...","orderStatus":"1","thirdOrderNo":"..."}}
+```
+
+Guardá `thirdOrderNo` y el `qrId` del mock PVS.
+
+#### B. Webhook pago PVS
+
 ```bash
 curl -X POST http://localhost:8080/webhook/pvs \
   -H "Content-Type: application/json" \
-  -d '{"qrId":"qr-ORD-<UUID>","stateId":5}'
+  -d '{"qrId":"<qrId>","stateId":5}'
 ```
-* **Respuesta Esperada (200 OK):**
-  ```json
-  {"status":"ok"}
-  ```
 
-#### Paso C: La máquina consulta el estado (GS -> Nosotros, Polling)
-GS realiza polling periódicamente para confirmar si puede dispensar.
-```bash
-curl -X GET http://localhost:8080/api/v1/orders/ORD-<UUID>
-```
-* **Respuesta Esperada (200 OK):**
-  * `orderStatus: 2` (Significa `PAYMENT_CONFIRMED/APPROVED` para GS).
+Dispara `PAYMENT_CONFIRMED` + notify best-effort a `notifyUrl` (`orderStatus "2"`).
 
-#### Paso D: Confirmar Entrega del Producto (GS -> Nosotros)
-Una vez entregado el producto, la máquina cierra el ciclo.
+#### C. Query status
+
 ```bash
-curl -X POST http://localhost:8080/api/v1/orders/ORD-<UUID>/complete
+curl -X POST http://localhost:8080/order/status \
+  -H "Content-Type: application/json" \
+  -d '{"orderNo":"GS-LOCAL-001","thirdOrderNo":"<thirdOrderNo>"}'
 ```
-* **Respuesta Esperada (200 OK):**
-  ```json
-  {"status":"ok"}
-  ```
-  *(El estado interno de la orden en DB pasa a `DONE`).*
+
+`orderStatus` string (`"2"` = pagado).
+
+#### D. Complete (entrega OK)
+
+```bash
+curl -X POST http://localhost:8080/order/complete \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orderNo":"GS-LOCAL-001",
+    "thirdOrderNo":"<thirdOrderNo>",
+    "success":true,
+    "orderStatus":2,
+    "outStockStatus":2,
+    "outStockTime":"2026-07-10 12:00:00"
+  }'
+```
+
+→ orden `DONE`. `returnCode: "success"`.
 
 ---
 
-### 2. Flujo de Cancelación (Expiración o Cancelación por el cliente)
+### 2. Cancel (antes de pagar)
 
-El cliente desiste de la compra antes de pagar y presiona "Cancelar" en la máquina.
-
-#### Paso A: Crear la orden
 ```bash
-curl -X POST http://localhost:8080/api/v1/orders \
+# create (igual que arriba)
+curl -X POST http://localhost:8080/order/cancel \
   -H "Content-Type: application/json" \
-  -d '{"objectId":"bebida-002","totalAmount":"200.00","deviceId":"maquina-local-1"}'
+  -d '{
+    "orderNo":"GS-LOCAL-001",
+    "thirdOrderNo":"<thirdOrderNo>",
+    "orderStatus":0,
+    "remark":"user cancel",
+    "cancelTime":"2026-07-10 12:00:00"
+  }'
 ```
 
-#### Paso B: Cancelar la orden (GS -> Nosotros)
-```bash
-curl -X POST http://localhost:8080/api/v1/orders/ORD-<UUID>/cancel
-```
-* **Respuesta Esperada (200 OK):**
-  ```json
-  {"status":"ok"}
-  ```
-  *(El estado en DB pasa a `CANCELLED`).*
+→ `CANCELLED`.
 
 ---
 
-### 3. Flujo de Reembolso (Falla de entrega/Out of stock)
+### 3. Complete fail → refund
 
-El cliente paga, pero la máquina expendedora no logra entregar la bebida y solicita la devolución del dinero.
+1. Create + webhook `stateId:5`.
+2. Complete con `success:false`:
 
-#### Paso A: Crear la orden y simular pago aprobado
-1. Crea la orden (`POST /api/v1/orders`).
-2. Aprueba el pago en el webhook (`POST /webhook/pvs` con `stateId: 5`).
-
-#### Paso B: Solicitar Reembolso (GS -> Nosotros)
-La máquina informa que la entrega falló y nos pide hacer el refund.
 ```bash
-curl -X POST http://localhost:8080/api/v1/orders/ORD-<UUID>/refund \
+curl -X POST http://localhost:8080/order/complete \
   -H "Content-Type: application/json" \
-  -d '{"refundNo":"REF-1001","refundAmount":"150.00","refundReason":"Falla en espiral dispensador"}'
+  -d '{
+    "orderNo":"GS-LOCAL-001",
+    "thirdOrderNo":"<thirdOrderNo>",
+    "success":false,
+    "orderStatus":2,
+    "outStockStatus":1
+  }'
 ```
-* **Respuesta Esperada (200 OK):**
-  ```json
-  {"refundNo":"REF-1001","thirdOrderNo":"ORD-<UUID>","refundStatus":"success"}
-  ```
-  *(Nuestro servicio llama en background a `PVS.Reverse` en nuestro Mock Server. La orden pasa a `REFUND_PENDING`).*
 
-#### Paso C: Confirmación de Reverso (PVS Webhook -> Nosotros)
-El reverso se procesa y PVS nos avisa por webhook (`stateId: 4`).
+→ orden `FAILED` (refundable si hubo `payment_confirmed_at`).
+
+1. Refund:
+
+```bash
+curl -X POST http://localhost:8080/order/refund \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orderNo":"GS-LOCAL-001",
+    "thirdOrderNo":"<thirdOrderNo>",
+    "refundNo":"REF-1001",
+    "refundAmount":"150.00",
+    "refundReason":"Falla en espiral"
+  }'
+```
+
+`refundStatus` inmediato suele ser `"waiting"`.
+
+1. Confirmar reverse PVS:
+
 ```bash
 curl -X POST http://localhost:8080/webhook/pvs \
   -H "Content-Type: application/json" \
-  -d '{"qrId":"qr-ORD-<UUID>","stateId":4}'
+  -d '{"qrId":"<qrId>","stateId":4}'
 ```
-* **Respuesta Esperada (200 OK):**
-  ```json
-  {"status":"ok"}
-  ```
-  *(La orden en DB pasa al estado final `REFUNDED`).*
+
+1. Query refund:
+
+```bash
+curl -X POST http://localhost:8080/order/refundStatus \
+  -H "Content-Type: application/json" \
+  -d '{"orderNo":"GS-LOCAL-001","thirdOrderNo":"<thirdOrderNo>","refundNo":"REF-1001"}'
+```
+
+→ `pending` | `success` | `fail`.
 
 ---
 
-## 🕰️ Reconciliación en Background (Reconciler Loop)
+## Reconciler
 
-El reconciliador del bridge se encarga de resolver órdenes estancadas sin intervención manual.
+- Reintenta notify GS para `PAYMENT_CONFIRMED` sin `gs_notified_at` (edad ≥ 30s).
+- Si se pierde el webhook de pago: forzá estado en mock PVS y esperá el scan:
 
-### Caso de Prueba: Pago confirmado pero Webhook de PVS perdido
-1. Crea una orden (`POST /api/v1/orders`).
-2. **Forzar estado en el Mock de PVS** simulando que el cliente pagó pero PVS nunca nos envió el webhook:
-   ```bash
-   curl -X POST http://localhost:8081/admin/transactions/qr-ORD-<UUID>/status \
-     -H "Content-Type: application/json" \
-     -d '{"stateId":5}'
-   ```
-3. Espera a que la orden expire en la base de datos (según `QR_EXPIRY_SEC` de tu configuración).
-4. El reconciliador escaneará la orden, le consultará el estado real al Mock de PVS, detectará que está aprobada (`stateId: 5`) y actualizará automáticamente la base de datos del bridge a `PAYMENT_CONFIRMED` de manera automática. Puedes ver los logs del bridge para verificar esta acción.
+```bash
+curl -X POST http://localhost:8081/admin/transactions/<qrId>/status \
+  -H "Content-Type: application/json" \
+  -d '{"stateId":5}'
+```
 
 ---
 
-## 📊 Métricas y Salud
+## Ops
 
-* **Healthcheck:** `GET http://localhost:8080/healthz` (Chequea conexión viva a la base de datos).
-* **Prometheus Metrics:** `GET http://localhost:8080/metrics` (Muestra contadores de requests, latencias y ejecuciones del reconciliador).
+- Health: `GET http://localhost:8080/healthz`
+- Metrics: `GET http://localhost:8080/metrics`
+- Tests: `go test ./...`
+- Postman: `docs/vps-powermix.postman_collection.json` (paths v2)
