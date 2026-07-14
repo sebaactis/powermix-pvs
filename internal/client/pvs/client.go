@@ -14,9 +14,10 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/time/rate"
 	"golang.org/x/sync/singleflight"
+	"golang.org/x/time/rate"
 
+	"github.com/seba/vps-powermix/internal/logging"
 	"github.com/seba/vps-powermix/internal/ports"
 )
 
@@ -88,8 +89,9 @@ func (c *Cliente) GenerateQR(ctx context.Context, req *ports.PVSQRRequest) (*por
 
 	bodyBytes, _ := json.Marshal(cuerpo)
 
+	endpoint := c.baseURL + "/external/connect/api/v1/qr/pvs"
 	httpReq, err := http.NewRequestWithContext(ctx, "POST",
-		c.baseURL+"/external/connect/api/v1/qr/pvs",
+		endpoint,
 		bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("creando request: %w", err)
@@ -97,11 +99,25 @@ func (c *Cliente) GenerateQR(ctx context.Context, req *ports.PVSQRRequest) (*por
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("Content-Type", "application/json")
 
+	logging.From(ctx).Debug("pvs.call.start", "endpoint", endpoint, "method", "POST")
+
+	start := time.Now()
 	resp, err := c.doConRetry(ctx, httpReq)
+	durationMs := time.Since(start).Milliseconds()
+
 	if err != nil {
+		logging.From(ctx).Debug("pvs.call.response",
+			"status_code", 0,
+			"duration_ms", durationMs,
+		)
 		return nil, &httpStatusError{err: err, codigoHTTP: 0}
 	}
 	defer resp.Body.Close()
+
+	logging.From(ctx).Debug("pvs.call.response",
+		"status_code", resp.StatusCode,
+		"duration_ms", durationMs,
+	)
 
 	respBytes, _ := io.ReadAll(resp.Body)
 
@@ -109,18 +125,26 @@ func (c *Cliente) GenerateQR(ctx context.Context, req *ports.PVSQRRequest) (*por
 		return nil, c.mapearError(resp.StatusCode, respBytes)
 	}
 
-	var pvsResp struct {
+	pvsResp, err := decodePVSData[struct {
 		QrID    string `json:"qrId"`
 		QrImage string `json:"qrImage"`
-		ExpiresAt string `json:"expiresAt,omitempty"`
-	}
-	if err := json.Unmarshal(respBytes, &pvsResp); err != nil {
+		Qr      string `json:"qr"` // ejemplo live a veces usa "qr" en vez de "qrImage"
+	}](respBytes)
+	if err != nil {
 		return nil, fmt.Errorf("parseando respuesta PVS: %w", err)
+	}
+
+	img := pvsResp.QrImage
+	if img == "" {
+		img = pvsResp.Qr
+	}
+	if img == "" {
+		return nil, fmt.Errorf("respuesta PVS sin imagen QR (qrImage/qr vacíos)")
 	}
 
 	return &ports.PVSQRResponse{
 		QrID:    pvsResp.QrID,
-		QrImage: pvsResp.QrImage,
+		QrImage: img,
 	}, nil
 }
 
@@ -145,11 +169,25 @@ func (c *Cliente) QueryStatus(ctx context.Context, qrID string) (*ports.PVSQuery
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 
+	logging.From(ctx).Debug("pvs.call.start", "endpoint", url, "method", "GET")
+
+	start := time.Now()
 	resp, err := c.doConRetry(ctx, httpReq)
+	durationMs := time.Since(start).Milliseconds()
+
 	if err != nil {
+		logging.From(ctx).Debug("pvs.call.response",
+			"status_code", 0,
+			"duration_ms", durationMs,
+		)
 		return nil, &httpStatusError{err: err, codigoHTTP: 0}
 	}
 	defer resp.Body.Close()
+
+	logging.From(ctx).Debug("pvs.call.response",
+		"status_code", resp.StatusCode,
+		"duration_ms", durationMs,
+	)
 
 	respBytes, _ := io.ReadAll(resp.Body)
 
@@ -157,11 +195,11 @@ func (c *Cliente) QueryStatus(ctx context.Context, qrID string) (*ports.PVSQuery
 		return nil, c.mapearError(resp.StatusCode, respBytes)
 	}
 
-	var pvsResp struct {
+	pvsResp, err := decodePVSData[struct {
 		StateID int    `json:"stateId"`
 		Status  string `json:"status,omitempty"`
-	}
-	if err := json.Unmarshal(respBytes, &pvsResp); err != nil {
+	}](respBytes)
+	if err != nil {
 		return nil, fmt.Errorf("parseando respuesta PVS: %w", err)
 	}
 
@@ -186,8 +224,9 @@ func (c *Cliente) Reverse(ctx context.Context, qrID string) (*ports.PVSReverseRe
 	cuerpo := map[string]string{"qrId": qrID}
 	bodyBytes, _ := json.Marshal(cuerpo)
 
+	endpoint := c.baseURL + "/external/connect/api/v1/qr/pvs/reverse"
 	httpReq, err := http.NewRequestWithContext(ctx, "POST",
-		c.baseURL+"/external/connect/api/v1/qr/pvs/reverse",
+		endpoint,
 		bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("creando request: %w", err)
@@ -195,18 +234,48 @@ func (c *Cliente) Reverse(ctx context.Context, qrID string) (*ports.PVSReverseRe
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("Content-Type", "application/json")
 
+	logging.From(ctx).Debug("pvs.call.start", "endpoint", endpoint, "method", "POST")
+
+	start := time.Now()
 	resp, err := c.doConRetry(ctx, httpReq)
+	durationMs := time.Since(start).Milliseconds()
+
 	if err != nil {
+		logging.From(ctx).Debug("pvs.call.response",
+			"status_code", 0,
+			"duration_ms", durationMs,
+		)
 		return nil, &httpStatusError{err: err, codigoHTTP: 0}
 	}
 	defer resp.Body.Close()
+
+	logging.From(ctx).Debug("pvs.call.response",
+		"status_code", resp.StatusCode,
+		"duration_ms", durationMs,
+	)
 
 	if resp.StatusCode >= 400 {
 		respBytes, _ := io.ReadAll(resp.Body)
 		return nil, c.mapearError(resp.StatusCode, respBytes)
 	}
 
-	return &ports.PVSReverseResponse{Success: true}, nil
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("leyendo respuesta reverse PVS: %w", err)
+	}
+
+	// Doc PVS: reverse también viene en envelope { code, ok, data:{ txeId } }
+	pvsResp, err := decodePVSData[struct {
+		TxEID string `json:"txeId"`
+	}](respBytes)
+	if err != nil {
+		return nil, fmt.Errorf("parseando respuesta reverse PVS: %w", err)
+	}
+
+	return &ports.PVSReverseResponse{
+		Success: true,
+		TxEID:   pvsResp.TxEID,
+	}, nil
 }
 
 // doConRetry ejecuta el request. Si obtiene 401, invalida el cache
@@ -249,6 +318,36 @@ func (c *Cliente) mapearError(statusCode int, body []byte) error {
 	}
 }
 
+// pvsEnvelope es la caja que PVS pone alrededor de toda respuesta OK.
+// Doc: { code, message, ok, data }
+type pvsEnvelope struct {
+	Code    string          `json:"code"`
+	Message string          `json:"message"`
+	OK      bool            `json:"ok"`
+	Data    json.RawMessage `json:"data"`
+}
+
+// decodePVSData abre envelope y devuelve data tipada.
+// Uso: dest, err := decodePVSData[MiTipo](body)
+func decodePVSData[T any](body []byte) (T, error) {
+	var zero T
+
+	var env pvsEnvelope
+	if err := json.Unmarshal(body, &env); err != nil {
+		return zero, fmt.Errorf("parseando envelope PVS: %w", err)
+	}
+	if len(env.Data) == 0 || string(env.Data) == "null" {
+		return zero, fmt.Errorf("envelope PVS sin data (code=%s message=%s ok=%v)",
+			env.Code, env.Message, env.OK)
+	}
+
+	var dest T
+	if err := json.Unmarshal(env.Data, &dest); err != nil {
+		return zero, fmt.Errorf("parseando data PVS: %w", err)
+	}
+	return dest, nil
+}
+
 // httpStatusError preserva el codigo HTTP original para que el handler
 // pueda decidir si es 400 (bad request) o 500 (retry).
 type httpStatusError struct {
@@ -256,8 +355,8 @@ type httpStatusError struct {
 	codigoHTTP int
 }
 
-func (e *httpStatusError) Error() string { return e.err.Error() }
-func (e *httpStatusError) Unwrap() error { return e.err }
+func (e *httpStatusError) Error() string   { return e.err.Error() }
+func (e *httpStatusError) Unwrap() error   { return e.err }
 func (e *httpStatusError) CodigoHTTP() int { return e.codigoHTTP }
 
 // Garantia de compilacion: Cliente implementa ports.PVSClient
@@ -318,11 +417,11 @@ func (c *TokenCache) Invalidate(ctx context.Context) {
 }
 
 // fetchToken hace POST a /oauth2/token con client_credentials.
+// Doc PVS: HTTP Basic (clientID:secret) + form solo grant_type=client_credentials.
+// No mandar client_id/client_secret en el body.
 func (c *TokenCache) fetchToken(ctx context.Context) (string, error) {
 	form := url.Values{
-		"grant_type":    {"client_credentials"},
-		"client_id":     {c.clientID},
-		"client_secret": {c.clientSecret},
+		"grant_type": {"client_credentials"},
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST",
@@ -332,6 +431,7 @@ func (c *TokenCache) fetchToken(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("creando request de token: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(c.clientID, c.clientSecret)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -357,6 +457,10 @@ func (c *TokenCache) fetchToken(ctx context.Context) (string, error) {
 	// Renovamos 60 segundos antes de que expire, para evitar race conditions
 	c.expiresAt = time.Now().Add(time.Duration(resultado.ExpiresIn-60) * time.Second)
 	c.mu.Unlock()
+
+	logging.From(ctx).Debug("pvs.token.acquired",
+		"expires_in_s", resultado.ExpiresIn,
+	)
 
 	return c.token, nil
 }

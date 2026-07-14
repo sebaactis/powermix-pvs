@@ -38,16 +38,22 @@ func TestGenerateQR_OK(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{
-			"qrId":    "qr_abc123",
-			"qrImage": "base64_fake_image",
+		// Envelope real PVS: { code, message, ok, data }
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"code":    "200",
+			"message": "OK",
+			"ok":      true,
+			"data": map[string]string{
+				"qrId":    "qr_abc123",
+				"qrImage": "base64_fake_image",
+			},
 		})
 	}))
 	defer mockPVS.Close()
 
 	client := clientePrepago(mockPVS.URL, ConRateLimit(1000, 1000))
 	resp, err := client.GenerateQR(context.Background(), &ports.PVSQRRequest{
-		Amount:    15000,
+		Amount:     15000,
 		ExternalID: "order-001",
 		Reference:  "ref-001",
 	})
@@ -59,6 +65,36 @@ func TestGenerateQR_OK(t *testing.T) {
 	}
 	if resp.QrImage != "base64_fake_image" {
 		t.Errorf("QrImage = %q, esperaba base64_fake_image", resp.QrImage)
+	}
+}
+
+// Ejemplo live a veces manda data.qr en vez de data.qrImage.
+func TestGenerateQR_CampoQrFallback(t *testing.T) {
+	mockPVS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"code": "OK", "message": "Operacion exitosa.", "ok": true,
+			"data": map[string]string{
+				"qrId": "qr_via_qr_field",
+				"qr":   "base64_via_qr",
+			},
+		})
+	}))
+	defer mockPVS.Close()
+
+	client := clientePrepago(mockPVS.URL, ConRateLimit(1000, 1000))
+	resp, err := client.GenerateQR(context.Background(), &ports.PVSQRRequest{
+		Amount: 1000, ExternalID: "e1", Reference: "r1",
+	})
+	if err != nil {
+		t.Fatalf("GenerateQR fallo: %v", err)
+	}
+	if resp.QrID != "qr_via_qr_field" {
+		t.Errorf("QrID = %q", resp.QrID)
+	}
+	if resp.QrImage != "base64_via_qr" {
+		t.Errorf("QrImage = %q, esperaba base64_via_qr (fallback de data.qr)", resp.QrImage)
 	}
 }
 
@@ -92,9 +128,13 @@ func TestQueryStatus_OK_StateId5(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		// Envelope real PVS: stateId vive en data
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"stateId": 5,
-			"status":  "APPROVED",
+			"code": "200", "message": "OK", "ok": true,
+			"data": map[string]interface{}{
+				"stateId": 5,
+				"status":  "APPROVED",
+			},
 		})
 	}))
 	defer mockPVS.Close()
@@ -114,8 +154,11 @@ func TestQueryStatus_StateId6_InProcess(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"stateId": 6,
-			"status":  "IN_PROCESS",
+			"code": "200", "message": "OK", "ok": true,
+			"data": map[string]interface{}{
+				"stateId": 6,
+				"status":  "IN_PROCESS",
+			},
 		})
 	}))
 	defer mockPVS.Close()
@@ -140,7 +183,13 @@ func TestReverse_OK(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]bool{"success": true})
+		// Envelope real PVS: txeId vive en data
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"code": "200", "message": "OK", "ok": true,
+			"data": map[string]string{
+				"txeId": "txe_rev_001",
+			},
+		})
 	}))
 	defer mockPVS.Close()
 
@@ -151,6 +200,9 @@ func TestReverse_OK(t *testing.T) {
 	}
 	if !resp.Success {
 		t.Error("Reverse deberia haber sido exitoso")
+	}
+	if resp.TxEID != "txe_rev_001" {
+		t.Errorf("TxEID = %q, esperaba txe_rev_001", resp.TxEID)
 	}
 }
 
@@ -174,9 +226,12 @@ func TestRetryOn401(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{
-			"qrId":    "qr_retry_ok",
-			"qrImage": "base64_retry",
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"code": "200", "message": "OK", "ok": true,
+			"data": map[string]string{
+				"qrId":    "qr_retry_ok",
+				"qrImage": "base64_retry",
+			},
 		})
 	}))
 	defer mockPVS.Close()
@@ -201,8 +256,11 @@ func TestRetryOn401(t *testing.T) {
 func TestRateLimitNoBloquea(t *testing.T) {
 	mockPVS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{
-			"qrId": "qr_ok", "qrImage": "base64",
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"code": "200", "message": "OK", "ok": true,
+			"data": map[string]string{
+				"qrId": "qr_ok", "qrImage": "base64",
+			},
 		})
 	}))
 	defer mockPVS.Close()
@@ -210,7 +268,7 @@ func TestRateLimitNoBloquea(t *testing.T) {
 	client := clientePrepago(mockPVS.URL, ConRateLimit(5000, 5000))
 	for i := 0; i < 10; i++ {
 		_, err := client.GenerateQR(context.Background(), &ports.PVSQRRequest{
-			Amount: 1000,
+			Amount:     1000,
 			ExternalID: fmt.Sprintf("order-%d", i),
 			Reference:  fmt.Sprintf("ref-%d", i),
 		})
@@ -270,5 +328,82 @@ func TestTokenCache_GetYInvalidate(t *testing.T) {
 	}
 	if intentosOAuth != 2 {
 		t.Errorf("intentos OAuth = %d, esperaba 2 (invalido + refresh)", intentosOAuth)
+	}
+}
+
+// TestTokenCache_OAuthBasicAuth: doc PVS pide Basic(clientID:secret)
+// + form solo grant_type. No client_id/secret en body.
+func TestTokenCache_OAuthBasicAuth(t *testing.T) {
+	mockPVS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, esperaba POST", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/oauth2/token") {
+			t.Errorf("path = %s, esperaba .../oauth2/token", r.URL.Path)
+		}
+
+		user, pass, ok := r.BasicAuth()
+		if !ok {
+			t.Error("falta Authorization Basic")
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if user != "test-client" || pass != "test-secret" {
+			t.Errorf("BasicAuth = %q:%q, esperaba test-client:test-secret", user, pass)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm: %v", err)
+		}
+		if r.Form.Get("grant_type") != "client_credentials" {
+			t.Errorf("grant_type = %q, esperaba client_credentials", r.Form.Get("grant_type"))
+		}
+		if r.Form.Get("client_id") != "" || r.Form.Get("client_secret") != "" {
+			t.Errorf("body no debe traer client_id/client_secret: %v", r.Form)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "token-via-basic",
+			"expires_in":   3600,
+		})
+	}))
+	defer mockPVS.Close()
+
+	cache := NewTokenCache(mockPVS.URL, "test-client", "test-secret")
+	tok, err := cache.Get(context.Background())
+	if err != nil {
+		t.Fatalf("Get fallo: %v", err)
+	}
+	if tok != "token-via-basic" {
+		t.Errorf("token = %q, esperaba token-via-basic", tok)
+	}
+}
+
+func TestDecodePVSData_OK(t *testing.T) {
+	body := []byte(`{
+		"code":"200","message":"OK","ok":true,
+		"data":{"qrId":"qr_1","qrImage":"img"}
+	}`)
+	type qrData struct {
+		QrID    string `json:"qrId"`
+		QrImage string `json:"qrImage"`
+	}
+	dest, err := decodePVSData[qrData](body)
+	if err != nil {
+		t.Fatalf("decodePVSData: %v", err)
+	}
+	if dest.QrID != "qr_1" || dest.QrImage != "img" {
+		t.Errorf("dest = %+v", dest)
+	}
+}
+
+func TestDecodePVSData_SinData(t *testing.T) {
+	body := []byte(`{"code":"500","message":"fail","ok":false}`)
+	_, err := decodePVSData[struct{}](body)
+	if err == nil {
+		t.Fatal("esperaba error sin data")
 	}
 }

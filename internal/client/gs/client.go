@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/seba/vps-powermix/internal/logging"
 	"github.com/seba/vps-powermix/internal/ports"
 )
 
@@ -89,11 +90,28 @@ func (c *Cliente) NotifyPayment(ctx context.Context, req *ports.GSNotifyPaymentR
 	}
 	SignRequest(httpReq, c.key, c.secret)
 
+	logging.From(ctx).Debug("gs.call.start",
+		"endpoint", req.NotifyURL,
+		"method", "POST",
+	)
+
+	start := time.Now()
 	resp, err := c.httpClient.Do(httpReq)
+	durationMs := time.Since(start).Milliseconds()
+
 	if err != nil {
+		logging.From(ctx).Debug("gs.call.response",
+			"status_code", 0,
+			"duration_ms", durationMs,
+		)
 		return nil, fmt.Errorf("NotifyPayment fallo: %w", err)
 	}
 	defer resp.Body.Close()
+
+	logging.From(ctx).Debug("gs.call.response",
+		"status_code", resp.StatusCode,
+		"duration_ms", durationMs,
+	)
 
 	respBytes, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {

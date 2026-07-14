@@ -448,6 +448,79 @@ func TestHandlePVSWebhook_PagoConfirmado(t *testing.T) {
 	}
 }
 
+// Callback real PVS manda status texto, no stateId numerico.
+func TestHandlePVSWebhook_StatusTextoApproved(t *testing.T) {
+	repo := &mockOrderRepo{}
+	svc := NewOrderService(repo, &mockPVSClient{}, &mockSyncLogRepo{}, nil)
+
+	_, err := svc.CreateOrder(context.Background(), validCreateReq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = svc.HandlePVSWebhook(context.Background(), &PVSWebhookRequest{
+		QrID:   "qr_test_123",
+		Status: "APPROVED",
+		TxEID:  "txe_pay_001",
+	})
+	if err != nil {
+		t.Fatalf("HandlePVSWebhook fallo: %v", err)
+	}
+	if repo.statusActual != domain.OrderPaymentConfirmed {
+		t.Errorf("status = %q, esperaba PAYMENT_CONFIRMED", repo.statusActual)
+	}
+}
+
+// Shape oficial PVS Callback Process (colección live).
+func TestHandlePVSWebhook_BodyOficialApproved(t *testing.T) {
+	repo := &mockOrderRepo{}
+	svc := NewOrderService(repo, &mockPVSClient{}, &mockSyncLogRepo{}, nil)
+
+	created, err := svc.CreateOrder(context.Background(), validCreateReq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = svc.HandlePVSWebhook(context.Background(), &PVSWebhookRequest{
+		Reference:  created.ThirdOrderNo,
+		Amount:     150.00,
+		QrID:       "qr_test_123",
+		TxEID:      "422164787",
+		Status:     "APPROVED",
+		NotifiedAt: "2024-10-10T18:00:23Z",
+		Payer: &PVSWebhookPayer{
+			Name: "PEDRO GARCIA", IDType: "DNI", IDNumber: "33445989",
+		},
+	})
+	if err != nil {
+		t.Fatalf("HandlePVSWebhook fallo: %v", err)
+	}
+	if repo.statusActual != domain.OrderPaymentConfirmed {
+		t.Errorf("status = %q, esperaba PAYMENT_CONFIRMED", repo.statusActual)
+	}
+}
+
+// Doc permite asociar por reference (nosotros mandamos thirdOrderNo como reference).
+func TestHandlePVSWebhook_LookupPorReference(t *testing.T) {
+	repo := &mockOrderRepo{}
+	svc := NewOrderService(repo, &mockPVSClient{}, &mockSyncLogRepo{}, nil)
+
+	created, err := svc.CreateOrder(context.Background(), validCreateReq())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sin qrId: solo reference (body o query ya resuelto en req.Reference / QueryReference).
+	err = svc.HandlePVSWebhook(context.Background(), &PVSWebhookRequest{
+		QueryReference: created.ThirdOrderNo,
+		Status:         "APPROVED",
+		TxEID:          "txe_ref_only",
+	})
+	if err != nil {
+		t.Fatalf("HandlePVSWebhook por reference fallo: %v", err)
+	}
+	if repo.statusActual != domain.OrderPaymentConfirmed {
+		t.Errorf("status = %q, esperaba PAYMENT_CONFIRMED", repo.statusActual)
+	}
+}
+
 func TestHandlePVSWebhook_Rechazado(t *testing.T) {
 	repo := &mockOrderRepo{}
 	svc := NewOrderService(repo, &mockPVSClient{}, &mockSyncLogRepo{}, nil)

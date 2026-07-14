@@ -2,10 +2,10 @@ package store
 
 import (
 	"context"
-	"log/slog"
 
 	"github.com/jmoiron/sqlx"
 
+	"github.com/seba/vps-powermix/internal/logging"
 	"github.com/seba/vps-powermix/internal/ports"
 )
 
@@ -36,7 +36,7 @@ func (r *PostgresSyncLogRepo) Insert(ctx context.Context, entry *ports.SyncLogEn
 		entry.RequestBody, entry.StatusCode, entry.LatencyMs, entry.Error,
 	)
 	if err != nil {
-		slog.Warn("no se pudo escribir el sync log (best-effort)",
+		logging.From(ctx).Warn("no se pudo escribir el sync log (best-effort)",
 			"error", err,
 			"third_order_no", entry.ThirdOrderNo,
 			"vendor", entry.Vendor,

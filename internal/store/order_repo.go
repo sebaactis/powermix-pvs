@@ -31,12 +31,12 @@ const columnasOrden = `third_order_no, gs_order_no, device_id, device_no, object
 	pvs_qr_id, pvs_qr_image, notify_url, gs_notified_at,
 	qr_generated_at, qr_expires_at, payment_confirmed_at,
 	gs_completed_at, gs_cancelled_at, refunded_at,
-	failure_reason, created_at, updated_at`
+	failure_reason, request_id, created_at, updated_at`
 
 // Create persiste una nueva orden y asigna ID y CreatedAt.
 func (r *PostgresOrderRepository) Create(ctx context.Context, o *domain.Order) error {
 	query := `INSERT INTO orders (` + columnasOrden + `)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,now(),now())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,now(),now())
 		RETURNING id, created_at`
 
 	err := r.db.QueryRowContext(ctx, query,
@@ -46,7 +46,7 @@ func (r *PostgresOrderRepository) Create(ctx context.Context, o *domain.Order) e
 		nilIfZero(o.QrGeneratedAt), nilIfZero(o.QrExpiresAt),
 		nilIfZero(o.PaymentConfirmedAt), nilIfZero(o.GsCompletedAt),
 		nilIfZero(o.GsCancelledAt), nilIfZero(o.RefundedAt),
-		o.FailureReason,
+		o.FailureReason, nilIfVacio(o.RequestID),
 	).Scan(&o.ID, &o.CreatedAt)
 
 	if err != nil {

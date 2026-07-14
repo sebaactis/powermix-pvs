@@ -4,10 +4,10 @@ package reconciler
 
 import (
 	"context"
-	"log/slog"
 	"time"
 
 	"github.com/seba/vps-powermix/internal/domain"
+	"github.com/seba/vps-powermix/internal/logging"
 	"github.com/seba/vps-powermix/internal/ports"
 )
 
@@ -50,7 +50,7 @@ func New(store ports.ReconcilerStore, orderRepo ports.OrderRepository,
 // Run ejecuta el loop de reconciliacion. Bloquea hasta que ctx se cancele.
 // Llamar como goroutine: go rec.Run(ctx)
 func (r *Reconciler) Run(ctx context.Context) error {
-	slog.Info("reconciler iniciado", "interval", r.interval, "batchSize", r.batchSize)
+	logging.From(ctx).Info("reconciler iniciado", "interval", r.interval, "batchSize", r.batchSize)
 
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
@@ -58,7 +58,7 @@ func (r *Reconciler) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("reconciler detenido")
+			logging.From(ctx).Info("reconciler detenido")
 			return ctx.Err()
 		case <-ticker.C:
 			r.scan(ctx)
@@ -69,12 +69,14 @@ func (r *Reconciler) Run(ctx context.Context) error {
 // scan ejecuta una pasada completa del reconciler.
 // Escanea ordenes colgadas y despacha segun su estado.
 func (r *Reconciler) scan(ctx context.Context) {
+	scanID := logging.NewScanID()
+	ctx = logging.WithScanID(ctx, scanID)
 	start := time.Now()
-	slog.Debug("reconciler scan empezando")
+	logging.From(ctx).Debug("reconciler.scan.start", "scan_id", scanID)
 
 	stuck, err := r.store.ScanStuckOrders(ctx, r.batchSize)
 	if err != nil {
-		slog.Error("reconciler: ScanStuckOrders", "error", err)
+		logging.From(ctx).Error("reconciler: ScanStuckOrders", "error", err)
 		return
 	}
 
@@ -97,13 +99,13 @@ func (r *Reconciler) scan(ctx context.Context) {
 
 	run.FinishedAt = time.Now()
 	if err := r.store.RecordRun(ctx, run); err != nil {
-		slog.Error("reconciler: RecordRun", "error", err)
+		logging.From(ctx).Error("reconciler: RecordRun", "error", err)
 		return
 	}
 
-	slog.Info("reconciler scan completo",
+	logging.From(ctx).Info("reconciler.scan.complete",
 		"scanned", run.ScannedCount, "fixed", run.FixedCount,
-		"duracion", time.Since(start))
+		"duration_ms", time.Since(start).Milliseconds())
 }
 
 // retryUnnotified reintenta notify a GS para pagos confirmados sin gs_notified_at.
@@ -113,7 +115,7 @@ func (r *Reconciler) retryUnnotified(ctx context.Context, run *ports.ReconcilerR
 	}
 	pendientes, err := r.orderRepo.ListPaymentConfirmedUnnotified(ctx, r.batchSize)
 	if err != nil {
-		slog.Error("reconciler: ListPaymentConfirmedUnnotified", "error", err)
+		logging.From(ctx).Error("reconciler: ListPaymentConfirmedUnnotified", "error", err)
 		return
 	}
 	run.ScannedCount += len(pendientes)
@@ -131,7 +133,7 @@ func (r *Reconciler) retryUnnotified(ctx context.Context, run *ports.ReconcilerR
 		r.notifier.NotifyPaymentIfNeeded(ctx, o)
 		if antes.IsZero() && !o.GsNotifiedAt.IsZero() {
 			run.FixedCount++
-			slog.Info("reconciler: notify GS reintentado ok",
+			logging.From(ctx).Info("reconciler.notify.retried.ok",
 				"thirdOrderNo", o.ThirdOrderNo)
 		}
 	}
@@ -142,7 +144,7 @@ func (r *Reconciler) retryUnnotified(ctx context.Context, run *ports.ReconcilerR
 func (r *Reconciler) reconcileQRShown(ctx context.Context, order *domain.Order, run *ports.ReconcilerRun) {
 	pvsResp, err := r.pvsClient.QueryStatus(ctx, order.PvsQrID)
 	if err != nil {
-		slog.Error("reconciler: PVS QueryStatus QR_SHOWN",
+		logging.From(ctx).Error("reconciler: PVS QueryStatus QR_SHOWN",
 			"orderNo", order.ThirdOrderNo, "error", err)
 		return
 	}
@@ -169,15 +171,15 @@ func (r *Reconciler) reconcileQRShown(ctx context.Context, order *domain.Order, 
 	updated, err := r.orderRepo.UpdateStatusGuardedAndFields(ctx, order.ThirdOrderNo,
 		domain.OrderQRShown, nuevoEstado, fields)
 	if err != nil {
-		slog.Error("reconciler: update QR_SHOWN",
+		logging.From(ctx).Error("reconciler: update QR_SHOWN",
 			"orderNo", order.ThirdOrderNo, "error", err)
 		return
 	}
 	if updated {
 		run.FixedCount++
-		slog.Info("reconciler: orden corregida",
-			"orderNo", order.ThirdOrderNo,
-			"de", order.Status, "a", nuevoEstado)
+		logging.From(ctx).Info("reconciler.order.corrected",
+			"order_id", order.ThirdOrderNo,
+			"from_status", order.Status, "to_status", nuevoEstado)
 
 		// Webhook perdido: avisar a GS ahora (sin minAge; recien confirmamos).
 		if nuevoEstado == domain.OrderPaymentConfirmed && r.notifier != nil {
@@ -195,7 +197,7 @@ func (r *Reconciler) reconcileQRShown(ctx context.Context, order *domain.Order, 
 func (r *Reconciler) reconcileRefundPending(ctx context.Context, order *domain.Order, run *ports.ReconcilerRun) {
 	pvsResp, err := r.pvsClient.QueryStatus(ctx, order.PvsQrID)
 	if err != nil {
-		slog.Error("reconciler: PVS QueryStatus REFUND_PENDING",
+		logging.From(ctx).Error("reconciler: PVS QueryStatus REFUND_PENDING",
 			"orderNo", order.ThirdOrderNo, "error", err)
 		return
 	}
@@ -208,13 +210,13 @@ func (r *Reconciler) reconcileRefundPending(ctx context.Context, order *domain.O
 	updated, err := r.orderRepo.UpdateStatusGuarded(ctx, order.ThirdOrderNo,
 		domain.OrderRefundPending, domain.OrderRefunded)
 	if err != nil {
-		slog.Error("reconciler: update REFUND_PENDING",
+		logging.From(ctx).Error("reconciler: update REFUND_PENDING",
 			"orderNo", order.ThirdOrderNo, "error", err)
 		return
 	}
 	if updated {
 		run.FixedCount++
-		slog.Info("reconciler: refund confirmado",
-			"orderNo", order.ThirdOrderNo)
+		logging.From(ctx).Info("refund.confirmed",
+			"order_id", order.ThirdOrderNo)
 	}
 }

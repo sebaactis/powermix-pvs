@@ -1,6 +1,9 @@
 package domain
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // OrderStatus representa el estado interno de una orden en nuestro
 // sistema. NO es el mismo que el status de GS (1-6) ni el de PVS
@@ -116,5 +119,22 @@ func PVSStatusFromStateID(stateID int) (PVSStatus, error) {
 		return PVSRejected, nil
 	default:
 		return "", fmt.Errorf("stateId desconocido: %d", stateID)
+	}
+}
+
+// PVSStatusFromCallback mapea status texto del callback PVS.
+// Doc: APPROVED | REJECTED (+ REVERSED/IN_PROCESS por compat).
+func PVSStatusFromCallback(status string) (PVSStatus, error) {
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "APPROVED":
+		return PVSApproved, nil
+	case "REJECTED":
+		return PVSRejected, nil
+	case "REVERSED", "REVERSE":
+		return PVSReversed, nil
+	case "IN_PROCESS", "IN PROCESS", "PENDING":
+		return PVSInProcess, nil
+	default:
+		return "", fmt.Errorf("status callback desconocido: %q", status)
 	}
 }

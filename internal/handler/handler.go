@@ -11,10 +11,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 
 	"github.com/seba/vps-powermix/internal/domain"
+	"github.com/seba/vps-powermix/internal/logging"
 	"github.com/seba/vps-powermix/internal/service"
 )
 
@@ -71,7 +71,7 @@ func (h *Handler) Routes() http.Handler {
 	mux.HandleFunc("GET /healthz", h.Healthz)
 	mux.Handle("GET /metrics", MetricsHandler())
 
-	return metricsMiddleware(recoveryMiddleware(loggingMiddleware(mux)))
+	return logging.RequestIDMiddleware(metricsMiddleware(recoveryMiddleware(loggingMiddleware(mux))))
 }
 
 // --- Envelope GS v2 ---
@@ -110,7 +110,7 @@ func (h *Handler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.orderSvc.CreateOrder(r.Context(), &req)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	writeGSOK(w, resp)
@@ -143,7 +143,7 @@ func (h *Handler) QueryStatus(w http.ResponseWriter, r *http.Request) {
 		ThirdOrderNo: body.ThirdOrderNo,
 	})
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	writeGSOK(w, resp)
@@ -159,7 +159,7 @@ func (h *Handler) CompleteOrder(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.orderSvc.CompleteOrder(r.Context(), &req)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	writeGSOK(w, resp)
@@ -175,7 +175,7 @@ func (h *Handler) CancelOrder(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.orderSvc.CancelOrder(r.Context(), &req)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	writeGSOK(w, resp)
@@ -191,7 +191,7 @@ func (h *Handler) Refund(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.refundSvc.Refund(r.Context(), &req)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	writeGSOK(w, resp)
@@ -207,7 +207,7 @@ func (h *Handler) RefundStatus(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.refundSvc.RefundStatus(r.Context(), &req)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	writeGSOK(w, resp)
@@ -215,17 +215,20 @@ func (h *Handler) RefundStatus(w http.ResponseWriter, r *http.Request) {
 
 // --- PVS webhook ---
 
-// PVSWebhook maneja POST /webhook/pvs (contrato PVS sin cambios).
+// PVSWebhook maneja POST /webhook/pvs — callback oficial PVS.
+// Doc: POST {{HOST}}?qr.reference=ref body {status APPROVED|REJECTED, qrId, ...}.
 func (h *Handler) PVSWebhook(w http.ResponseWriter, r *http.Request) {
 	var req service.PVSWebhookRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, http.StatusBadRequest, "JSON invalido")
 		return
 	}
+	// Doc oficial: query qr.reference=MerchantQRref
+	req.QueryReference = r.URL.Query().Get("qr.reference")
 
 	if err := h.orderSvc.HandlePVSWebhook(r.Context(), &req); err != nil {
-		slog.Error("pvs webhook error", "error", err)
-		writeError(w, err)
+		logging.From(r.Context()).Error("pvs webhook error", "error", err)
+		writeError(w, r, err)
 		return
 	}
 	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -266,7 +269,7 @@ func respondError(w http.ResponseWriter, status int, msg string) {
 }
 
 // writeError mapea errores del dominio a envelope GS (code 400 + HTTP acorde).
-func writeError(w http.ResponseWriter, err error) {
+func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, domain.ErrOrderNotFound),
 		errors.Is(err, domain.ErrRefundNotFound):
@@ -282,7 +285,7 @@ func writeError(w http.ResponseWriter, err error) {
 		writeGSErr(w, http.StatusBadRequest, err.Error())
 
 	default:
-		slog.Error("error interno", "error", err)
+		logging.From(r.Context()).Error("error interno", "error", err)
 		writeGS(w, http.StatusInternalServerError, 400, "error interno", nil)
 	}
 }
@@ -293,7 +296,7 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				slog.Error("panic recuperado", "path", r.URL.Path,
+				logging.From(r.Context()).Error("panic recuperado", "path", r.URL.Path,
 					"method", r.Method, "panic", rec)
 				respondError(w, http.StatusInternalServerError, "error interno")
 			}
@@ -304,7 +307,7 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		slog.Info("request", "method", r.Method, "path", r.URL.Path,
+		logging.From(r.Context()).Info("request", "method", r.Method, "path", r.URL.Path,
 			"remote", r.RemoteAddr)
 		next.ServeHTTP(w, r)
 	})

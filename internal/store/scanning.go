@@ -21,6 +21,7 @@ func scanOrderRow(scanner interface {
 		qrGen, qrExp            sql.NullString
 		payConf, gsComp, gsCanc sql.NullString
 		refunded                sql.NullString
+		requestID               sql.NullString
 	)
 
 	err := scanner.Scan(
@@ -28,7 +29,7 @@ func scanOrderRow(scanner interface {
 		&o.PayMethod, &o.WayCode, &o.Status, &o.GsOrderStatus, &o.PvsStatus,
 		&pvsQrID, &o.PvsQrImage, &o.NotifyURL, &gsNotified,
 		&qrGen, &qrExp, &payConf, &gsComp, &gsCanc, &refunded,
-		&o.FailureReason, &o.CreatedAt, &o.UpdatedAt,
+		&o.FailureReason, &requestID, &o.CreatedAt, &o.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, domain.ErrOrderNotFound
@@ -39,6 +40,7 @@ func scanOrderRow(scanner interface {
 
 	o.GsOrderNo = gsOrderNo.String
 	o.PvsQrID = pvsQrID.String
+	o.RequestID = requestID.String
 	o.GsNotifiedAt = parseNullableTime(gsNotified)
 	o.QrGeneratedAt = parseNullableTime(qrGen)
 	o.QrExpiresAt = parseNullableTime(qrExp)

@@ -6,13 +6,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/seba/vps-powermix/internal/logging"
 
 	"github.com/seba/vps-powermix/internal/domain"
 	"github.com/seba/vps-powermix/internal/ports"
@@ -165,10 +166,29 @@ type CancelOrderResponse struct {
 	ReturnMsg    string `json:"returnMsg"`
 }
 
-// PVSWebhookRequest es lo que PVS nos envia cuando cambia el estado de un QR.
+// PVSWebhookRequest es el callback oficial PVS (colección QR Integration).
+// POST {{HOST}}?qr.reference=ref — body con status APPROVED|REJECTED.
 type PVSWebhookRequest struct {
-	QrID    string `json:"qrId"`
-	StateID int    `json:"stateId"` // 6=In Process, 5=Approved, 4=Reverse, 3=Rejected
+	Reference  string           `json:"reference"`
+	Amount     float64          `json:"amount"`
+	QrID       string           `json:"qrId"`
+	TxEID      string           `json:"txeId"`
+	Status     string           `json:"status"` // APPROVED | REJECTED
+	NotifiedAt string           `json:"notified_at"`
+	Payer      *PVSWebhookPayer `json:"payer,omitempty"`
+
+	// Query oficial ?qr.reference=... (lo llena el handler, no el JSON).
+	QueryReference string `json:"-"`
+
+	// Solo tests/mock viejos hasta alinear mockpvs. NO es contrato callback real.
+	StateID int `json:"stateId,omitempty"`
+}
+
+// PVSWebhookPayer es el bloque payer del callback oficial.
+type PVSWebhookPayer struct {
+	Name     string `json:"name"`
+	IDType   string `json:"idType"`
+	IDNumber string `json:"idNumber"`
 }
 
 // CreateOrder ejecuta POST /order/qr (GS Open API v2):
@@ -221,6 +241,7 @@ func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest)
 		PriceCents:   montoCentavos,
 		NotifyURL:    req.NotifyURL,
 		Status:       domain.OrderReceived,
+		RequestID:    logging.RequestIDFrom(ctx),
 	}
 	if err := s.orderRepo.Create(ctx, orden); err != nil {
 		return nil, fmt.Errorf("creando orden en DB: %w", err)
@@ -246,6 +267,12 @@ func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest)
 	if err != nil {
 		return nil, fmt.Errorf("actualizando orden con QR: %w", err)
 	}
+
+	logging.From(ctx).Info("pvs.qr.created",
+		"order_id", thirdOrderNo,
+		"third_order_no", thirdOrderNo,
+		"pvs_qr_id", pvsResp.QrID,
+	)
 
 	_ = s.syncLogRepo.Insert(ctx, &ports.SyncLogEntry{
 		ThirdOrderNo: thirdOrderNo,
@@ -296,24 +323,38 @@ func (s *OrderService) QueryStatus(ctx context.Context, req *QueryStatusRequest)
 // CanTransitionTo rechaza la transición y es un no-op silencioso.
 // (Puede reenviar el mismo webhook varias veces.)
 func (s *OrderService) HandlePVSWebhook(ctx context.Context, req *PVSWebhookRequest) error {
-	if req.QrID == "" {
-		return fmt.Errorf("%w: qrId es obligatorio", domain.ErrInvalidInput)
+	// reference body o query ?qr.reference= (doc oficial).
+	ref := req.Reference
+	if ref == "" {
+		ref = req.QueryReference
 	}
 
-	// 1. Buscar orden por el qrId de PVS
-	orden, err := s.orderRepo.GetByPVSQrID(ctx, req.QrID)
-	if err != nil {
-		return fmt.Errorf("buscando orden por qrId %q: %w", req.QrID, err)
+	// 1. Buscar orden: qrId preferido; si no, reference (= thirdOrderNo al crear QR).
+	var orden *domain.Order
+	var err error
+	switch {
+	case req.QrID != "":
+		orden, err = s.orderRepo.GetByPVSQrID(ctx, req.QrID)
+		if err != nil {
+			return fmt.Errorf("buscando orden por qrId %q: %w", req.QrID, err)
+		}
+	case ref != "":
+		orden, err = s.orderRepo.GetByThirdOrderNo(ctx, ref)
+		if err != nil {
+			return fmt.Errorf("buscando orden por reference %q: %w", ref, err)
+		}
+	default:
+		return fmt.Errorf("%w: qrId o reference obligatorio", domain.ErrInvalidInput)
 	}
 
-	// 2. Mapear stateId -> estado interno objetivo
-	pvsStatus, err := domain.PVSStatusFromStateID(req.StateID)
+	// 2. Preferir status texto (callback real). Fallback stateId (tests/mock).
+	pvsStatus, err := resolvePVSWebhookStatus(req)
 	if err != nil {
-		return fmt.Errorf("mapeando stateId %d: %w", req.StateID, err)
+		return err
 	}
 	nuevoEstado := pvsStatusToOrderStatus(pvsStatus, orden.Status)
 	if nuevoEstado == "" {
-		// stateId=6 (IN_PROCESS): el pago sigue pendiente, nada que hacer.
+		// IN_PROCESS: el pago sigue pendiente, nada que hacer.
 		return nil
 	}
 
@@ -349,7 +390,15 @@ func (s *OrderService) HandlePVSWebhook(ctx context.Context, req *PVSWebhookRequ
 		Method:       "POST",
 	})
 
-	// 6. Notify outbound a GS (solo pago confirmado; best-effort)
+	// 6. Milestone trace: payment.confirmed con trazabilidad asincrona
+	if nuevoEstado == domain.OrderPaymentConfirmed {
+		logging.From(ctx).Info("payment.confirmed",
+			"order_id", orden.ThirdOrderNo,
+			"original_request_id", orden.RequestID,
+		)
+	}
+
+	// 7. Notify outbound a GS (solo pago confirmado; best-effort)
 	if nuevoEstado == domain.OrderPaymentConfirmed {
 		orden.Status = domain.OrderPaymentConfirmed
 		if orden.PaymentConfirmedAt.IsZero() {
@@ -395,23 +444,36 @@ func (s *OrderService) NotifyPaymentIfNeeded(ctx context.Context, orden *domain.
 		TotalAmount:  fmt.Sprintf("%d.%02d", orden.PriceCents/100, orden.PriceCents%100),
 	})
 	if err != nil {
-		slog.Error("notify a GS fallo", "thirdOrderNo", orden.ThirdOrderNo, "error", err)
+		logging.From(ctx).Error("notify a GS fallo", "thirdOrderNo", orden.ThirdOrderNo, "error", err)
+		logging.From(ctx).Info("gs.notify.failed",
+			"order_id", orden.ThirdOrderNo,
+			"reason", "network_error",
+		)
 		return
 	}
 	if resp != nil && resp.ReturnCode != "" && resp.ReturnCode != "success" {
-		slog.Error("notify a GS returnCode no exitoso",
+		logging.From(ctx).Error("notify a GS returnCode no exitoso",
 			"thirdOrderNo", orden.ThirdOrderNo, "returnCode", resp.ReturnCode)
+		logging.From(ctx).Info("gs.notify.failed",
+			"order_id", orden.ThirdOrderNo,
+			"reason", "return_code_not_success",
+			"return_code", resp.ReturnCode,
+		)
 		return
 	}
 
 	now := time.Now()
 	if err := s.orderRepo.UpdateStatusAndFields(ctx, orden.ThirdOrderNo, orden.Status,
 		map[string]interface{}{"gs_notified_at": now}); err != nil {
-		slog.Error("marcando gs_notified_at", "thirdOrderNo", orden.ThirdOrderNo, "error", err)
+		logging.From(ctx).Error("marcando gs_notified_at", "thirdOrderNo", orden.ThirdOrderNo, "error", err)
 		return
 	}
 	orden.GsNotifiedAt = now
-	slog.Info("notify a GS ok", "thirdOrderNo", orden.ThirdOrderNo, "gsOrderNo", orden.GsOrderNo)
+	logging.From(ctx).Info("gs.notify.ok",
+		"order_id", orden.ThirdOrderNo,
+		"third_order_no", orden.ThirdOrderNo,
+		"gs_order_no", orden.GsOrderNo,
+	)
 }
 
 // CompleteOrder: GS notifica resultado de preparacion/entrega (POST /order/complete).
@@ -528,6 +590,17 @@ func (s *OrderService) CancelOrder(ctx context.Context, req *CancelOrderRequest)
 		ReturnCode:   "success",
 		ReturnMsg:    req.Remark,
 	}, nil
+}
+
+// resolvePVSWebhookStatus: status texto gana si viene; si no, stateId (compat).
+func resolvePVSWebhookStatus(req *PVSWebhookRequest) (domain.PVSStatus, error) {
+	if req.Status != "" {
+		return domain.PVSStatusFromCallback(req.Status)
+	}
+	if req.StateID != 0 {
+		return domain.PVSStatusFromStateID(req.StateID)
+	}
+	return "", fmt.Errorf("%w: status o stateId obligatorio", domain.ErrInvalidInput)
 }
 
 // pvsStatusToOrderStatus elige el estado interno objetivo para un PVSStatus.

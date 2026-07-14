@@ -12,8 +12,8 @@ type PVSQRRequest struct {
 
 // PVSQRResponse es la respuesta de PVS al generar un QR.
 type PVSQRResponse struct {
-	QrID    string // ID interno del QR en PVS
-	QrImage string // QR en base64 (lo que va a GS como qrUrl)
+	QrID      string // ID interno del QR en PVS
+	QrImage   string // QR en base64 (lo que va a GS como qrUrl)
 	ExpiresAt string // timestamp de expiracion (opcional)
 }
 
@@ -29,6 +29,7 @@ type PVSQueryResponse struct {
 type PVSReverseResponse struct {
 	Success bool
 	Message string
+	TxEID   string // id transacción reverse en PVS (data.txeId)
 }
 
 // PVSClient define las llamadas HTTP que hacemos hacia PVS.

@@ -49,6 +49,9 @@ type Order struct {
 	// Error
 	FailureReason string // motivo de falla, timeout, cancelacion
 
+	// Tracing
+	RequestID string // request_id de la peticion HTTP que origino la orden
+
 	// Metadata
 	CreatedAt time.Time
 	UpdatedAt time.Time

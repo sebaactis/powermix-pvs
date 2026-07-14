@@ -1,7 +1,14 @@
-version: '3.8'
+# docker-compose.yml — Producción / Sandbox real
+# Apunta a PVS sandbox real (api01.pvssa.com.ar).
+# No incluye mockpvs.
+#
+# Uso: docker compose up -d
+# Variables sensibles: crear .env con PVS_CLIENT_ID, PVS_CLIENT_SECRET, etc.
+
+volumes:
+  pgdata:
 
 services:
-  # Base de datos relacional para guardar las ordenes, conciliaciones y logs
   postgres:
     image: postgres:15-alpine
     container_name: powermix_db
@@ -19,10 +26,11 @@ services:
       timeout: 5s
       retries: 5
 
-  # Contenedor efimero para correr las migraciones SQLX de forma automatica
   migrations:
     image: migrate/migrate:v4.17.0
     container_name: powermix_migrations
+    profiles:
+      - migrations
     volumes:
       - ./migrations:/migrations
     command:
@@ -33,17 +41,6 @@ services:
       postgres:
         condition: service_healthy
 
-  # Mock de PVS para simular respuestas de QR, tokens y reversos localmente
-  mockpvs:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: powermix_mockpvs
-    command: ["./mockpvs"]
-    ports:
-      - "8081:8081"
-
-  # El servicio principal del Bridge
   bridge:
     build:
       context: .
@@ -52,30 +49,16 @@ services:
     command: ["./vps-powermix"]
     ports:
       - "8080:8080"
+    env_file:
+      - .env
     environment:
       - HTTP_ADDR=:8080
-      - LOG_LEVEL=debug
+      - LOG_LEVEL=info
       - LOG_FORMAT=json
       - DATABASE_URL=postgres://postgres:postgres@postgres:5432/vps_powermix?sslmode=disable
-      # URLs y credenciales configuradas para apuntar a la red interna de Docker
-      - GS_BASE_URL=http://localhost:8082
-      - GS_KEY=gs_mock_key
-      - GS_SECRET=gs_mock_secret
-      - GS_PVS_ENABLED=true
-      - PVS_BASE_URL=http://mockpvs:8081
-      - PVS_CLIENT_ID=pvs_mock_client
-      - PVS_CLIENT_SECRET=pvs_mock_secret
-      - PVS_CALLBACK_URL=http://bridge:8080/webhook/pvs
       - RECONCILER_ENABLED=true
-      - RECONCILER_INTERVAL_SEC=10
+      - RECONCILER_INTERVAL_SEC=30
       - RECONCILER_BATCH_SIZE=200
     depends_on:
       postgres:
         condition: service_healthy
-      migrations:
-        condition: service_completed_successfully
-      mockpvs:
-        condition: service_started
-
-volumes:
-  pgdata:

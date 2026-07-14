@@ -1,1 +1,8 @@
 .atl
+.codegraph
+openspec
+.ruff_cache
+
+docs
+
+

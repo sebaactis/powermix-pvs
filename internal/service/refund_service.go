@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/seba/vps-powermix/internal/domain"
+	"github.com/seba/vps-powermix/internal/logging"
 	"github.com/seba/vps-powermix/internal/ports"
 )
 
@@ -153,6 +154,11 @@ func (s *RefundService) Refund(ctx context.Context, req *RefundRequest) (*Refund
 	_ = s.orderRepo.UpdateStatus(ctx, orden.ThirdOrderNo, domain.OrderRefundPending)
 	_ = s.refundRepo.UpdateStatus(ctx, req.RefundNo, domain.RefundSuccess)
 	refund.Status = domain.RefundSuccess
+
+	logging.From(ctx).Info("refund.requested",
+		"order_id", orden.ThirdOrderNo,
+		"refund_no", req.RefundNo,
+	)
 
 	// 10. Audit log (best-effort)
 	_ = s.syncLog.Insert(ctx, &ports.SyncLogEntry{

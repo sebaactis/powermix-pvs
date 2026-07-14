@@ -24,11 +24,11 @@ func TestPostgresOrderRepository_CreateEGetByThirdOrderNo(t *testing.T) {
 
 	// Crear orden
 	orden := &domain.Order{
-		ThirdOrderNo:    "test-order-001",
-		DeviceID:   "dev-001",
-		ObjectID:   "drink-fresa",
-		PriceCents: 15000,
-		Status:     domain.OrderReceived,
+		ThirdOrderNo: "test-order-001",
+		DeviceID:     "dev-001",
+		ObjectID:     "drink-fresa",
+		PriceCents:   15000,
+		Status:       domain.OrderReceived,
 	}
 
 	err := repo.Create(ctx, orden)
@@ -175,13 +175,13 @@ func TestPostgresSyncLogRepo_InsertBestEffort(t *testing.T) {
 	ctx := context.Background()
 
 	entry := &ports.SyncLogEntry{
-		ThirdOrderNo:    "test-log-001",
-		Vendor:     "PVS",
-		Direction:  "outbound",
-		Endpoint:   "/qr/pvs/service",
-		Method:     "POST",
-		StatusCode: 200,
-		LatencyMs:  150,
+		ThirdOrderNo: "test-log-001",
+		Vendor:       "PVS",
+		Direction:    "outbound",
+		Endpoint:     "/qr/pvs/service",
+		Method:       "POST",
+		StatusCode:   200,
+		LatencyMs:    150,
 	}
 	err := repo.Insert(ctx, entry)
 	if err != nil {
@@ -199,11 +199,11 @@ func TestPostgresRefundRepository_CreateEGetByRefundNo(t *testing.T) {
 	ctx := context.Background()
 
 	rf := &domain.Refund{
-		RefundNo:   "test-refund-001",
-		ThirdOrderNo:    "test-order-001",
-		PriceCents: 15000,
-		Motivo:     "test",
-		Status:     domain.RefundPending,
+		RefundNo:     "test-refund-001",
+		ThirdOrderNo: "test-order-001",
+		PriceCents:   15000,
+		Motivo:       "test",
+		Status:       domain.RefundPending,
 	}
 
 	err := repo.Create(ctx, rf)
@@ -241,10 +241,10 @@ func TestPostgresRefundRepository_UpdateStatus(t *testing.T) {
 	ctx := context.Background()
 
 	rf := &domain.Refund{
-		RefundNo:   "test-refund-002",
-		ThirdOrderNo:    "test-order-002",
-		PriceCents: 10000,
-		Status:     domain.RefundPending,
+		RefundNo:     "test-refund-002",
+		ThirdOrderNo: "test-order-002",
+		PriceCents:   10000,
+		Status:       domain.RefundPending,
 	}
 	if err := repo.Create(ctx, rf); err != nil {
 		t.Fatalf("error creando reembolso: %v", err)
@@ -302,6 +302,7 @@ func conectarDB(t *testing.T) *sqlx.DB {
 		"../../migrations/002_idempotency_keys.up.sql",
 		"../../migrations/003_api_sync_log.up.sql",
 		"../../migrations/004_refunds.up.sql",
+		"../../migrations/009_request_id.up.sql",
 	}
 	for _, m := range migrar {
 		sql, err := os.ReadFile(m)
@@ -321,11 +322,11 @@ func crearOrdenTest(t *testing.T, repo *PostgresOrderRepository, ctx context.Con
 	t.Helper()
 
 	orden := &domain.Order{
-		ThirdOrderNo:    "test-" + time.Now().Format("150405.000"),
-		DeviceID:   "dev-test",
-		ObjectID:   "drink-test",
-		PriceCents: 10000,
-		Status:     domain.OrderReceived,
+		ThirdOrderNo: "test-" + time.Now().Format("150405.000"),
+		DeviceID:     "dev-test",
+		ObjectID:     "drink-test",
+		PriceCents:   10000,
+		Status:       domain.OrderReceived,
 	}
 
 	if err := repo.Create(ctx, orden); err != nil {

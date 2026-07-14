@@ -1,0 +1,84 @@
+# docker-compose.sandbox.yml — Sandbox local con mock PVS
+# TODO: mock GS endpoint
+# El mock pvs NO envía webhooks automáticos.
+# Para simular un pago:
+#   1. POST /order/qr → obtienes thirdOrderNo
+#   2. POST /admin/transactions/{qrId}/status en mockpvs con stateId=5
+#   3. POST /webhook/pvs con body
+
+volumes:
+  pgdata:
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: powermix_sb_db
+    environment:
+      POSTGRES_DB: vps_powermix
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d vps_powermix"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  migrations:
+    image: migrate/migrate:v4.17.0
+    container_name: powermix_sb_migrations
+    volumes:
+      - ./migrations:/migrations
+    command:
+      - -path=/migrations
+      - -database=postgres://postgres:postgres@postgres:5432/vps_powermix?sslmode=disable
+      - up
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  mockpvs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: powermix_sb_mockpvs
+    command: ["./mockpvs"]
+    ports:
+      - "8081:8081"
+
+  bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: powermix_sb_bridge
+    command: ["./vps-powermix"]
+    ports:
+      - "8080:8080"
+    environment:
+      - HTTP_ADDR=:8080
+      - LOG_LEVEL=debug
+      - LOG_FORMAT=json
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/vps_powermix?sslmode=disable
+      # Mock PVS local
+      - PVS_BASE_URL=http://mockpvs:8081
+      - PVS_CLIENT_ID=mock
+      - PVS_CLIENT_SECRET=mock
+      - PVS_CALLBACK_URL=http://bridge:8080/webhook/pvs
+      # GS: no hay mock, pero el notify es best-effort y no rompe el flujo
+      - GS_BASE_URL=http://localhost:9999
+      - GS_KEY=gs_mock_key
+      - GS_SECRET=gs_mock_secret
+      # Reconciler
+      - RECONCILER_ENABLED=true
+      - RECONCILER_INTERVAL_SEC=15
+      - RECONCILER_BATCH_SIZE=200
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+      mockpvs:
+        condition: service_started

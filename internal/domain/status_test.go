@@ -52,9 +52,9 @@ func TestPVSStatusFromStateID(t *testing.T) {
 		{5, PVSApproved, false},
 		{4, PVSReversed, false},
 		{3, PVSRejected, false},
-		{99, "", true},   // desconocido
-		{0, "", true},    // invalido
-		{-1, "", true},   // negativo
+		{99, "", true}, // desconocido
+		{0, "", true},  // invalido
+		{-1, "", true}, // negativo
 	}
 
 	for _, tt := range tests {
@@ -69,6 +69,40 @@ func TestPVSStatusFromStateID(t *testing.T) {
 			if !tt.wantErr && got != tt.espera {
 				t.Errorf("PVSStatusFromStateID(%d) = %q, esperaba %q",
 					tt.stateID, got, tt.espera)
+			}
+		})
+	}
+}
+
+// TestPVSStatusFromCallback: status texto del callback real PVS.
+func TestPVSStatusFromCallback(t *testing.T) {
+	tests := []struct {
+		status  string
+		espera  PVSStatus
+		wantErr bool
+	}{
+		{"APPROVED", PVSApproved, false},
+		{"rejected", PVSRejected, false}, // case-insensitive
+		{"REVERSED", PVSReversed, false},
+		{"REVERSE", PVSReversed, false},
+		{"IN_PROCESS", PVSInProcess, false},
+		{"IN PROCESS", PVSInProcess, false},
+		{"PENDING", PVSInProcess, false},
+		{"foo", "", true},
+		{"", "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.status, func(t *testing.T) {
+			got, err := PVSStatusFromCallback(tt.status)
+			if tt.wantErr && err == nil {
+				t.Errorf("PVSStatusFromCallback(%q) esperaba error", tt.status)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("PVSStatusFromCallback(%q) error: %v", tt.status, err)
+			}
+			if !tt.wantErr && got != tt.espera {
+				t.Errorf("PVSStatusFromCallback(%q) = %q, esperaba %q", tt.status, got, tt.espera)
 			}
 		})
 	}

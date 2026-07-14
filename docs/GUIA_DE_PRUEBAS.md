@@ -70,15 +70,22 @@ Respuesta esperada (envelope):
 
 Guardá `thirdOrderNo` y el `qrId` del mock PVS.
 
-#### B. Webhook pago PVS
+#### B. Webhook pago PVS (callback oficial)
 
 ```bash
-curl -X POST http://localhost:8080/webhook/pvs \
+curl -X POST "http://localhost:8080/webhook/pvs?qr.reference=<thirdOrderNo>" \
   -H "Content-Type: application/json" \
-  -d '{"qrId":"<qrId>","stateId":5}'
+  -d '{
+    "reference":"<thirdOrderNo>",
+    "amount":150.00,
+    "qrId":"<qrId>",
+    "txeId":"txe-mock-1",
+    "status":"APPROVED",
+    "notified_at":"2024-10-10T18:00:23Z"
+  }'
 ```
 
-Dispara `PAYMENT_CONFIRMED` + notify best-effort a `notifyUrl` (`orderStatus "2"`).
+Doc PVS: `status` APPROVED|REJECTED. Dispara `PAYMENT_CONFIRMED` + notify best-effort a `notifyUrl` (`orderStatus "2"`).
 
 #### C. Query status
 
@@ -130,7 +137,7 @@ curl -X POST http://localhost:8080/order/cancel \
 
 ### 3. Complete fail → refund
 
-1. Create + webhook `stateId:5`.
+1. Create + webhook `status: APPROVED`.
 2. Complete con `success:false`:
 
 ```bash
@@ -163,12 +170,17 @@ curl -X POST http://localhost:8080/order/refund \
 
 `refundStatus` inmediato suele ser `"waiting"`.
 
-1. Confirmar reverse PVS:
+1. Confirmar reverse PVS (flujo local; callback oficial de pago solo documenta APPROVED|REJECTED):
 
 ```bash
-curl -X POST http://localhost:8080/webhook/pvs \
+curl -X POST "http://localhost:8080/webhook/pvs?qr.reference=<thirdOrderNo>" \
   -H "Content-Type: application/json" \
-  -d '{"qrId":"<qrId>","stateId":4}'
+  -d '{
+    "reference":"<thirdOrderNo>",
+    "qrId":"<qrId>",
+    "status":"REVERSED",
+    "txeId":"txe-rev-1"
+  }'
 ```
 
 1. Query refund:
@@ -201,4 +213,7 @@ curl -X POST http://localhost:8081/admin/transactions/<qrId>/status \
 - Health: `GET http://localhost:8080/healthz`
 - Metrics: `GET http://localhost:8080/metrics`
 - Tests: `go test ./...`
-- Postman: `docs/vps-powermix.postman_collection.json` (paths v2)
+- Postman: `docs/vps-powermix.postman_collection.json`
+  - Variables de colección (`baseUrl`, `orderNo`, `thirdOrderNo`, `qrId`, `refundNo`, …)
+  - Flujos numerados: **01 feliz**, **02 cancel**, **03 fail→refund**, **04 reconciler**
+  - Cada Create regenera IDs; correr los requests de la carpeta **en orden**

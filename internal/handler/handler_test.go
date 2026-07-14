@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -266,6 +268,30 @@ func TestPVSWebhook_Handler(t *testing.T) {
 	}
 }
 
+// Doc oficial: body status APPROVED + query qr.reference.
+func TestPVSWebhook_Handler_BodyOficialConQuery(t *testing.T) {
+	h := &Handler{orderSvc: &mockOrderSvc{}, db: &mockDB{}}
+
+	body := `{
+		"reference":"ord-ref-1",
+		"amount":50.00,
+		"qrId":"pvs-qr-1",
+		"txeId":"422164787",
+		"status":"APPROVED",
+		"notified_at":"2024-10-10T18:00:23Z",
+		"payer":{"name":"PEDRO GARCIA","idType":"DNI","idNumber":"33445989"}
+	}`
+	req := httptest.NewRequest("POST", "/webhook/pvs?qr.reference=ord-ref-1", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, esperaba 200; body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestHealthz_Healthy(t *testing.T) {
 	h := &Handler{db: &mockDB{}}
 	req := httptest.NewRequest("GET", "/healthz", nil)
@@ -324,6 +350,47 @@ func TestRecoveryMiddleware(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, esperaba 500", w.Code)
+	}
+}
+
+func TestRequestIDMiddleware_InjectedIntoResponse(t *testing.T) {
+	h := &Handler{orderSvc: &mockOrderSvc{}, db: &mockDB{}}
+
+	body := `{"orderNo":"GS-1","subject":"Test","totalAmount":"100.00","notifyUrl":"https://gs.example/n","objectId":"drink-test","attach":"deviceId=dev-1"}`
+	req := httptest.NewRequest("POST", "/order/qr", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	respID := w.Header().Get("X-Request-ID")
+	if respID == "" {
+		t.Fatal("X-Request-ID response header ausente")
+	}
+	if !strings.HasPrefix(respID, "req_") {
+		t.Fatalf("X-Request-ID no comienza con req_: %q", respID)
+	}
+}
+
+func TestLoggingMiddleware_EmitsRequestIDInLog(t *testing.T) {
+	var buf bytes.Buffer
+	original := slog.Default()
+	handler := slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
+	slog.SetDefault(slog.New(handler))
+	defer slog.SetDefault(original)
+
+	h := &Handler{orderSvc: &mockOrderSvc{}, db: &mockDB{}}
+
+	body := `{"orderNo":"GS-1","subject":"Test","totalAmount":"100.00","notifyUrl":"https://gs.example/n","objectId":"drink-test","attach":"deviceId=dev-1"}`
+	req := httptest.NewRequest("POST", "/order/qr", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	output := buf.String()
+	if !strings.Contains(output, "request_id=req_") {
+		t.Fatalf("log no contiene request_id=req_: %s", output)
 	}
 }
 
