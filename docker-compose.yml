@@ -56,4 +56,21 @@ services:
       RECONCILER_ENABLED: ${RECONCILER_ENABLED:-true}
       RECONCILER_INTERVAL_SEC: ${RECONCILER_INTERVAL_SEC:-60}
       RECONCILER_BATCH_SIZE: ${RECONCILER_BATCH_SIZE:-200}
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - http://localhost:8080/healthz
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
