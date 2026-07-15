@@ -2,7 +2,6 @@ package logging
 
 import "net/http"
 
-// RequestIDHeader es el nombre del header HTTP para correlación de requests.
 const RequestIDHeader = "X-Request-ID"
 
 // RequestIDMiddleware lee X-Request-ID del header entrante.

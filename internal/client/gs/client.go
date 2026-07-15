@@ -26,7 +26,6 @@ type Cliente struct {
 	secret     string
 }
 
-// New crea un Cliente GS listo para usar.
 func New(baseURL, key, secret string, opts ...Opcion) *Cliente {
 	c := &Cliente{
 		httpClient: &http.Client{Timeout: 10 * time.Second},
@@ -40,10 +39,8 @@ func New(baseURL, key, secret string, opts ...Opcion) *Cliente {
 	return c
 }
 
-// Opcion permite configurar el cliente (functional options).
 type Opcion func(*Cliente)
 
-// ConTimeoutHTTP cambia el timeout del http.Client.
 func ConTimeoutHTTP(d time.Duration) Opcion {
 	return func(c *Cliente) { c.httpClient.Timeout = d }
 }

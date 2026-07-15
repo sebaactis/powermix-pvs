@@ -19,7 +19,6 @@ type PostgresSyncLogRepo struct {
 	db *sqlx.DB
 }
 
-// NewPostgresSyncLogRepo crea un SyncLogRepo listo para usar.
 func NewPostgresSyncLogRepo(db *sqlx.DB) *PostgresSyncLogRepo {
 	return &PostgresSyncLogRepo{db: db}
 }

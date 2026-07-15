@@ -5,10 +5,7 @@ import (
 	"log/slog"
 )
 
-// From extrae el logger del contexto.
 // Si hay request_id: logger = slog.Default().With("request_id", id).
-// Si hay scan_id: logger = logger.With("scan_id", id).
-// Si ninguno: devuelve slog.Default().
 func From(ctx context.Context) *slog.Logger {
 	logger := slog.Default()
 

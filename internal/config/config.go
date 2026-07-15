@@ -15,41 +15,32 @@ import (
 // Config es la unica fuente de verdad para toda la configuracion
 // del servicio. Cargala con Load(); el valor cero no es valido.
 type Config struct {
-	// --- HTTP ---
 	HTTPAddr string // direccion donde escucha el servidor HTTP
 
-	// --- Base de datos ---
 	DatabaseURL string // DSN de PostgreSQL
 
-	// --- GS (maquina expendedora GSWYIT) ---
 	GSBaseURL      string        // URL base de la API de GS
 	GSKey          string        // key del header de autenticacion
 	GSSecret       string        // secret compartido para firmar key-md5
 	GSReplayWindow time.Duration // ventana de tolerancia para replay attacks
 
-	// --- PVS (proveedor QR argentino) ---
 	PVSBaseURL       string        // URL base de la API de PVS
 	PVSClientID      string        // client_id para OAuth2
 	PVSClientSecret  string        // client_secret para OAuth2
 	PVSCallbackURL   string        // URL donde PVS nos envia el webhook
 	PVSNotifyTimeout time.Duration // timeout para llamadas a PVS
 
-	// --- Ciclo de vida de la orden ---
 	QRExpiry time.Duration // tiempo de validez del QR desde su generacion
 
-	// --- Reconciler ---
 	ReconcilerInterval  time.Duration // cada cuanto ejecuta el reconciler
 	ReconcilerBatchSize int           // maximo de ordenes por lote
 	ReconcilerEnabled   bool          // true = arranca el worker al iniciar
 
-	// --- Feature flags ---
 	GSEnabled bool // true = procesa pedidos entrantes de GS
 
-	// --- Observabilidad ---
 	LogLevel  string // nivel de log: debug, info, warn, error
 	LogFormat string // formato: text o json
 
-	// --- Avanzado ---
 	SyncLogRetentionDays   int           // dias que se conservan los logs de sync
 	LockAcquisitionTimeout time.Duration // timeout maximo para adquirir un lock de fila
 }
@@ -92,7 +83,6 @@ func Load() (*Config, error) {
 		// HTTP
 		HTTPAddr: getEnv("HTTP_ADDR", ":8080"),
 
-		// Base de datos
 		DatabaseURL: getEnv("DATABASE_URL", ""),
 
 		// GS
@@ -108,22 +98,17 @@ func Load() (*Config, error) {
 		PVSCallbackURL:   getEnv("PVS_CALLBACK_URL", ""),
 		PVSNotifyTimeout: getEnvDurSec("PVS_NOTIFY_TIMEOUT_SEC", 10),
 
-		// Ciclo de vida de la orden
 		QRExpiry: getEnvDurSec("QR_EXPIRY_SEC", 180),
 
-		// Reconciler
 		ReconcilerInterval:  getEnvDurSec("RECONCILER_INTERVAL_SEC", 60),
 		ReconcilerBatchSize: getEnvInt("RECONCILER_BATCH_SIZE", 200),
 		ReconcilerEnabled:   getEnvBool("RECONCILER_ENABLED", false),
 
-		// Feature flags
 		GSEnabled: getEnvBool("GS_PVS_ENABLED", false),
 
-		// Observabilidad
 		LogLevel:  getEnv("LOG_LEVEL", "info"),
 		LogFormat: getEnv("LOG_FORMAT", "json"),
 
-		// Avanzado
 		SyncLogRetentionDays:   getEnvInt("SYNC_LOG_RETENTION_DAYS", 30),
 		LockAcquisitionTimeout: getEnvDurSec("LOCK_ACQUISITION_TIMEOUT_SEC", 5),
 	}
@@ -134,7 +119,6 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// MustLoad es como Load pero panic si hay error. Util para main().
 func MustLoad() *Config {
 	cfg, err := Load()
 	if err != nil {
@@ -188,7 +172,6 @@ func ValidateLogLevel(level string) error {
 	}
 }
 
-// ValidateLogFormat chequea que LogFormat sea text o json.
 func ValidateLogFormat(format string) error {
 	switch format {
 	case "text", "json":

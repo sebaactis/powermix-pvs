@@ -1,4 +1,3 @@
-// Package handler contiene los handlers HTTP y middlewares.
 package handler
 
 import (
@@ -10,8 +9,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-// --- Colectores de métricas ---
-// Registrados globalmente para simplificar el wiring.
 // En producción avanzada se recomienda un Registry separado.
 
 var (
@@ -50,7 +47,6 @@ var (
 		[]string{"endpoint"},
 	)
 
-	// Reconciler
 	reconcilerRuns = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Name: "reconciler_runs_total",
@@ -72,7 +68,6 @@ func init() {
 		reconcilerRuns, reconcilerFixed)
 }
 
-// metricsMiddleware registra contadores y duracion de cada request HTTP.
 func metricsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -92,7 +87,6 @@ func MetricsHandler() http.Handler {
 	return promhttp.Handler()
 }
 
-// statusWriter captura el codigo de status HTTP para las metricas.
 type statusWriter struct {
 	http.ResponseWriter
 	status int

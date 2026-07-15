@@ -15,13 +15,11 @@ type PostgresReconcilerStore struct {
 	db *sqlx.DB
 }
 
-// NewPostgresReconcilerStore crea un reconciler store listo para usar.
 func NewPostgresReconcilerStore(db *sqlx.DB) *PostgresReconcilerStore {
 	return &PostgresReconcilerStore{db: db}
 }
 
 // ScanStuckOrders busca ordenes que necesitan reconciliacion.
-// Incluye dos tipos:
 //   - QR_SHOWN con QR vencido (posiblemente el webhook se perdio)
 //   - REFUND_PENDING estancado (esperando confirmacion de PVS)
 func (r *PostgresReconcilerStore) ScanStuckOrders(ctx context.Context, batchSize int) ([]domain.Order, error) {
@@ -48,7 +46,6 @@ func (r *PostgresReconcilerStore) ScanStuckOrders(ctx context.Context, batchSize
 	return ordenes, rows.Err()
 }
 
-// RecordRun persiste una ejecucion del reconciler.
 func (r *PostgresReconcilerStore) RecordRun(ctx context.Context, run *ports.ReconcilerRun) error {
 	query := `INSERT INTO reconciler_runs (started_at, finished_at, scanned_count, fixed_count, notes)
 		VALUES ($1, $2, $3, $4, $5)`

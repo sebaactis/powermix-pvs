@@ -18,9 +18,7 @@ import (
 	"github.com/seba/vps-powermix/internal/service"
 )
 
-// --- Interfaces minimas para testabilidad ---
 
-// OrderService es lo que el handler necesita de OrderService.
 type OrderService interface {
 	CreateOrder(ctx context.Context, req *service.CreateOrderRequest) (*service.CreateOrderResponse, error)
 	QueryStatus(ctx context.Context, req *service.QueryStatusRequest) (*service.QueryStatusResponse, error)
@@ -35,24 +33,20 @@ type RefundService interface {
 	RefundStatus(ctx context.Context, req *service.RefundStatusRequest) (*service.RefundStatusResponse, error)
 }
 
-// DBPinger es la unica dependencia de DB que necesita el handler.
 type DBPinger interface {
 	PingContext(ctx context.Context) error
 }
 
-// Handler agrupa todos los endpoints HTTP.
 type Handler struct {
 	orderSvc  OrderService
 	refundSvc RefundService
 	db        DBPinger
 }
 
-// New crea un Handler listo para usar.
 func New(orderSvc OrderService, refundSvc RefundService, db DBPinger) *Handler {
 	return &Handler{orderSvc: orderSvc, refundSvc: refundSvc, db: db}
 }
 
-// Routes construye el mux con todas las rutas y middlewares.
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 
@@ -67,16 +61,13 @@ func (h *Handler) Routes() http.Handler {
 	// PVS webhook (sin cambios de contrato)
 	mux.HandleFunc("POST /webhook/pvs", h.PVSWebhook)
 
-	// Ops
 	mux.HandleFunc("GET /healthz", h.Healthz)
 	mux.Handle("GET /metrics", MetricsHandler())
 
 	return logging.RequestIDMiddleware(metricsMiddleware(recoveryMiddleware(loggingMiddleware(mux))))
 }
 
-// --- Envelope GS v2 ---
 
-// gsEnvelope es el cuerpo estandar hacia/desde GS: {code,msg,data}.
 type gsEnvelope struct {
 	Code int         `json:"code"`
 	Msg  string      `json:"msg"`
@@ -97,9 +88,7 @@ func writeGSErr(w http.ResponseWriter, httpStatus int, msg string) {
 	writeGS(w, httpStatus, 400, msg, nil)
 }
 
-// --- GS endpoints ---
 
-// CreateOrder maneja POST /order/qr.
 // Por ahora reusa CreateOrderRequest del service (PR-B alineara campos v2).
 func (h *Handler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 	var req service.CreateOrderRequest
@@ -116,13 +105,11 @@ func (h *Handler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 	writeGSOK(w, resp)
 }
 
-// queryStatusBody es el body de POST /order/status.
 type queryStatusBody struct {
 	OrderNo      string `json:"orderNo"`
 	ThirdOrderNo string `json:"thirdOrderNo"`
 }
 
-// QueryStatus maneja POST /order/status.
 func (h *Handler) QueryStatus(w http.ResponseWriter, r *http.Request) {
 	var body queryStatusBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -149,7 +136,6 @@ func (h *Handler) QueryStatus(w http.ResponseWriter, r *http.Request) {
 	writeGSOK(w, resp)
 }
 
-// CompleteOrder maneja POST /order/complete.
 func (h *Handler) CompleteOrder(w http.ResponseWriter, r *http.Request) {
 	var req service.CompleteOrderRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -165,7 +151,6 @@ func (h *Handler) CompleteOrder(w http.ResponseWriter, r *http.Request) {
 	writeGSOK(w, resp)
 }
 
-// CancelOrder maneja POST /order/cancel.
 func (h *Handler) CancelOrder(w http.ResponseWriter, r *http.Request) {
 	var req service.CancelOrderRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -213,7 +198,6 @@ func (h *Handler) RefundStatus(w http.ResponseWriter, r *http.Request) {
 	writeGSOK(w, resp)
 }
 
-// --- PVS webhook ---
 
 // PVSWebhook maneja POST /webhook/pvs — callback oficial PVS.
 // Doc: POST {{HOST}}?qr.reference=ref body {status APPROVED|REJECTED, qrId, ...}.
@@ -234,9 +218,7 @@ func (h *Handler) PVSWebhook(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// --- Health check ---
 
-// Healthz maneja GET /healthz. Verifica que la DB responda.
 func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.PingContext(r.Context()); err != nil {
 		respondJSON(w, http.StatusServiceUnavailable, map[string]string{
@@ -248,7 +230,6 @@ func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// --- Helpers ---
 
 func respondJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
@@ -260,15 +241,12 @@ func respondJSON(w http.ResponseWriter, status int, data interface{}) {
 
 func respondError(w http.ResponseWriter, status int, msg string) {
 	// Errores no-GS (webhook/health) mantienen forma simple.
-	// Errores de endpoints GS usan writeGSErr/writeError.
 	if status == http.StatusBadRequest || status == http.StatusNotFound ||
 		status == http.StatusConflict || status == http.StatusInternalServerError {
-		// Si el caller es GS path, writeError ya usa envelope.
 	}
 	respondJSON(w, status, map[string]string{"error": msg})
 }
 
-// writeError mapea errores del dominio a envelope GS (code 400 + HTTP acorde).
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, domain.ErrOrderNotFound),
@@ -290,7 +268,6 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
-// --- Middleware ---
 
 func recoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

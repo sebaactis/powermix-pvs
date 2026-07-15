@@ -18,7 +18,6 @@ func WithRequestID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, keyRequestID, id)
 }
 
-// RequestIDFrom extrae el request_id del contexto; "" si ausente.
 func RequestIDFrom(ctx context.Context) string {
 	v, _ := ctx.Value(keyRequestID).(string)
 	return v
@@ -29,7 +28,6 @@ func WithScanID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, keyScanID, id)
 }
 
-// ScanIDFrom extrae el scan_id del contexto; "" si ausente.
 func ScanIDFrom(ctx context.Context) string {
 	v, _ := ctx.Value(keyScanID).(string)
 	return v

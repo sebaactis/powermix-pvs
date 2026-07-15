@@ -1,6 +1,4 @@
-// Package ports define las interfaces (puertos) que conectan el dominio
-// con el mundo exterior. Las implementaciones (adapters) viven en
-// internal/store (Postgres) e internal/client/{gs,pvs} (HTTP).
+// Package ports: interfaces hacia DB y clientes externos (adapters fuera).
 package ports
 
 import (
@@ -10,114 +8,69 @@ import (
 	"github.com/seba/vps-powermix/internal/domain"
 )
 
-// OrderRepository: acceso a la tabla de ordenes en la base de datos.
 type OrderRepository interface {
-	// Create persiste una nueva orden.
 	Create(ctx context.Context, o *domain.Order) error
-
-	// GetByThirdOrderNo busca una orden por nuestro identificador unico.
 	GetByThirdOrderNo(ctx context.Context, orderNo string) (*domain.Order, error)
-
-	// GetByGsOrderNo busca una orden por el serial orderNo de GS.
 	GetByGsOrderNo(ctx context.Context, gsOrderNo string) (*domain.Order, error)
-
-	// GetByPVSQrID busca una orden por el ID del QR de PVS.
 	GetByPVSQrID(ctx context.Context, qrID string) (*domain.Order, error)
-
-	// ListPaymentConfirmedUnnotified devuelve ordenes pagadas sin notify a GS.
 	ListPaymentConfirmedUnnotified(ctx context.Context, limit int) ([]domain.Order, error)
-
-	// UpdateStatus actualiza el estado interno de una orden.
-	// Usa SELECT ... FOR UPDATE si se pasa una transaccion explicita.
 	UpdateStatus(ctx context.Context, orderNo string, status domain.OrderStatus) error
-
-	// UpdateStatusAndFields actualiza el estado y campos adicionales
-	// en una sola operacion atomica. Para cuando hay que actualizar
-	// estado + qr_id + qr_image + timestamps juntos.
+	// UpdateStatusAndFields: estado + campos extra en un solo UPDATE atómico.
 	UpdateStatusAndFields(ctx context.Context, orderNo string,
 		status domain.OrderStatus, fields map[string]interface{}) error
-
-	// GetStaleByStatus devuelve ordenes en un estado dado que llevan
-	// mas de since sin cambios. Para el reconciler.
 	GetStaleByStatus(ctx context.Context, status domain.OrderStatus,
 		since time.Time, limit int) ([]domain.Order, error)
-
-	// FindRecentDup busca una orden duplicada reciente (mismo dispositivo +
-	// producto + precio) creada dentro de la ventana since. Para dedup.
-	// Si no encuentra, devuelve ErrOrderNotFound.
+	// FindRecentDup: mismo device+SKU+precio dentro de ventana; si no hay → ErrOrderNotFound.
 	FindRecentDup(ctx context.Context, deviceID, objectID string,
 		priceCents int64, since time.Time) (*domain.Order, error)
-
-	// UpdateStatusGuarded actualiza el estado SOLO si el estado actual
-	// coincide con expectedStatus. Devuelve updated=false si el estado
-	// ya cambio (otra transaccion gano la carrera).
-	// Es la proteccion contra races entre webhook y reconciler.
+	// UpdateStatusGuarded: UPDATE solo si status actual == expected (anti-race webhook/reconciler).
 	UpdateStatusGuarded(ctx context.Context, orderNo string,
 		expectedStatus, newStatus domain.OrderStatus) (updated bool, err error)
-
-	// UpdateStatusGuardedAndFields es como UpdateStatusGuarded pero ademas
-	// actualiza campos adicionales en la misma operacion atomica.
 	UpdateStatusGuardedAndFields(ctx context.Context, orderNo string,
 		expectedStatus, newStatus domain.OrderStatus,
 		fields map[string]interface{}) (updated bool, err error)
 }
 
-// RefundRepository: acceso a la tabla de reembolsos.
 type RefundRepository interface {
 	Create(ctx context.Context, r *domain.Refund) error
-
 	GetByRefundNo(ctx context.Context, refundNo string) (*domain.Refund, error)
-
-	// GetLatestByThirdOrderNo devuelve el reembolso mas reciente de una orden.
 	GetLatestByThirdOrderNo(ctx context.Context, thirdOrderNo string) (*domain.Refund, error)
-
 	UpdateStatus(ctx context.Context, refundNo string,
 		status domain.RefundStatus) error
 }
 
-// IdempotencyStore: tabla de claves de idempotencia para webhooks.
-// Cada webhook entrante intenta insertar una clave unica.
-// Si la clave ya existe, es un duplicado y se ignora.
+// IdempotencyStore: insert de clave única; false = webhook duplicado.
 type IdempotencyStore interface {
-	// TryInsert intenta insertar la clave. Devuelve true si se inserto
-	// (primera vez), false si ya existia (duplicado).
 	TryInsert(ctx context.Context, key string) (inserted bool, err error)
 }
 
-// SyncLogEntry es un registro de auditoria de una llamada a PVS o GS.
 type SyncLogEntry struct {
-	ThirdOrderNo string // orden asociada (third_order_no)
-	Vendor       string // "PVS" o "GS"
-	Direction    string // "outbound" o "inbound"
-	Endpoint     string // ruta del endpoint
-	Method       string // GET, POST
-	RequestBody  string // body del request (redactado)
-	StatusCode   int    // codigo HTTP de respuesta
-	LatencyMs    int64  // duracion en milisegundos
-	Error        string // mensaje de error si lo hubo
+	ThirdOrderNo string
+	Vendor       string // "PVS" | "GS"
+	Direction    string // "outbound" | "inbound"
+	Endpoint     string
+	Method       string
+	RequestBody  string
+	StatusCode   int
+	LatencyMs    int64
+	Error        string
 	CreatedAt    time.Time
 }
 
-// SyncLogRepo: registro de auditoria para todas las llamadas a
-// PVS y GS. Se escribe siempre, incluso si falla (best-effort).
+// SyncLogRepo: auditoría best-effort (no debe tumbar el flujo principal).
 type SyncLogRepo interface {
 	Insert(ctx context.Context, entry *SyncLogEntry) error
 }
 
-// ReconcilerRun es un registro de una ejecucion del reconciler.
 type ReconcilerRun struct {
 	StartedAt    time.Time
 	FinishedAt   time.Time
-	ScannedCount int // ordenes examinadas
-	FixedCount   int // ordenes corregidas
+	ScannedCount int
+	FixedCount   int
 	Notes        string
 }
 
-// ReconcilerStore: registro de ejecuciones del worker de reconciliacion.
 type ReconcilerStore interface {
-	// ScanStuckOrders busca ordenes que necesitan reconciliacion.
 	ScanStuckOrders(ctx context.Context, batchSize int) ([]domain.Order, error)
-
-	// RecordRun persiste una ejecucion del reconciler.
 	RecordRun(ctx context.Context, run *ReconcilerRun) error
 }

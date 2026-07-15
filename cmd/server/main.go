@@ -21,13 +21,12 @@ import (
 	"github.com/seba/vps-powermix/internal/reconciler"
 	"github.com/seba/vps-powermix/internal/service"
 	"github.com/seba/vps-powermix/internal/store"
+	"github.com/seba/vps-powermix/internal/timeutil"
 )
 
 func main() {
-	// 1. Config
 	cfg := config.MustLoad()
 
-	// 2. Logger con redaccion de datos sensibles
 	logHandler := handler.NewRedactingHandler(
 		slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 			Level: parseLogLevel(cfg.LogLevel),
@@ -37,8 +36,7 @@ func main() {
 	slog.SetDefault(slog.New(logHandler))
 	slog.Info("iniciando servidor", "addr", cfg.HTTPAddr, "gs_enabled", cfg.GSEnabled)
 
-	// 3. Base de datos
-	db, err := sqlx.Connect("postgres", cfg.DatabaseURL)
+	db, err := sqlx.Connect("postgres", timeutil.WithDSNTimezone(cfg.DatabaseURL))
 	if err != nil {
 		slog.Error("conectando a base de datos", "error", err)
 		os.Exit(1)
@@ -46,9 +44,8 @@ func main() {
 	defer db.Close()
 	db.SetMaxOpenConns(20)
 	db.SetMaxIdleConns(5)
-	slog.Info("conexion a base de datos establecida")
+	slog.Info("conexion a base de datos establecida", "timezone", timeutil.DefaultLocation)
 
-	// 4. Repositorios
 	orderRepo := store.NewPostgresOrderRepository(db)
 	refundRepo := store.NewPostgresRefundRepository(db)
 	syncLogRepo := store.NewPostgresSyncLogRepo(db)
@@ -57,21 +54,17 @@ func main() {
 
 	_ = idempStore // reservado para uso futuro
 
-	// 5. Clientes externos
 	pvsClient := pvsclient.New(cfg.PVSBaseURL, cfg.PVSClientID, cfg.PVSClientSecret,
 		pvsclient.ConRateLimit(50, 50))
 	gsClient := gsclient.New(cfg.GSBaseURL, cfg.GSKey, cfg.GSSecret)
 
-	// 6. Servicios
 	orderSvc := service.NewOrderService(orderRepo, pvsClient, syncLogRepo, gsClient,
 		service.ConQRExpiry(cfg.QRExpiry))
 	refundSvc := service.NewRefundService(orderRepo, pvsClient, refundRepo, syncLogRepo)
 
-	// 7. HTTP handler
 	h := handler.New(orderSvc, refundSvc, db)
 	mux := h.Routes()
 
-	// 8. Reconciler (opcional, ver RECONCILER_ENABLED)
 	if cfg.ReconcilerEnabled {
 		rec := reconciler.New(reconcilerStore, orderRepo, pvsClient, orderSvc,
 			cfg.ReconcilerInterval)
@@ -80,7 +73,6 @@ func main() {
 			"interval", cfg.ReconcilerInterval)
 	}
 
-	// 9. Servidor HTTP
 	srv := &http.Server{
 		Addr:         cfg.HTTPAddr,
 		Handler:      mux,
@@ -101,7 +93,6 @@ func main() {
 		}
 	}()
 
-	// Esperar senial de terminacion
 	sig := <-quit
 	slog.Info("senal recibida, apagando servidor", "signal", sig)
 
@@ -114,7 +105,6 @@ func main() {
 	slog.Info("servidor apagado correctamente")
 }
 
-// parseLogLevel convierte string a slog.Level.
 func parseLogLevel(level string) slog.Level {
 	switch level {
 	case "debug":

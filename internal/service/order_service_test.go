@@ -920,8 +920,9 @@ func TestFormatGSTime(t *testing.T) {
 	if FormatGSTime(time.Time{}) != "" {
 		t.Fatal("zero time debe ser string vacio")
 	}
+	// 15:04:05 UTC = 12:04:05 America/Argentina/Buenos_Aires (UTC-3)
 	t0 := time.Date(2026, 7, 10, 15, 4, 5, 0, time.UTC)
-	if got := FormatGSTime(t0); got != "2026-07-10 15:04:05" {
-		t.Fatalf("FormatGSTime = %q", got)
+	if got := FormatGSTime(t0); got != "2026-07-10 12:04:05" {
+		t.Fatalf("FormatGSTime = %q, want ARG wall clock", got)
 	}
 }

@@ -26,7 +26,6 @@ type Refund struct {
 	// GS
 	GSRefundNo string // numero de reembolso de GS (puede ser diferente)
 
-	// Timestamps
 	RequestedAt time.Time
 	CompletedAt time.Time
 	Error       string

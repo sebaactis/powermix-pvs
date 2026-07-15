@@ -9,7 +9,6 @@ import (
 
 // scanOrderRow escanea una fila de la tabla orders (segun columnasOrden)
 // y la mapea a domain.Order. Es un helper compartido entre
-// PostgresOrderRepository y PostgresReconcilerStore.
 func scanOrderRow(scanner interface {
 	Scan(dest ...interface{}) error
 }) (*domain.Order, error) {
