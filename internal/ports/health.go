@@ -6,7 +6,6 @@ import (
 )
 
 // HealthChecker define los chequeos de salud del servicio.
-// Se usa en el endpoint /healthz.
 type HealthChecker interface {
 	// PingDB verifica que la conexion a la base de datos responde.
 	PingDB(ctx context.Context) error

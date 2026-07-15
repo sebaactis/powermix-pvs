@@ -6,11 +6,9 @@ import (
 	"time"
 )
 
-// --- Crockford Base32 ---
 
 const crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
-// encodeCrockford codifica bytes a Base32 Crockford (sin padding).
 func encodeCrockford(b []byte) string {
 	var sb []byte
 	for i := 0; i < len(b); i += 5 {
@@ -36,10 +34,8 @@ func encodeCrockford(b []byte) string {
 	return string(sb)
 }
 
-// --- ULID ---
 
 // newULID genera un ULID Crockford de 26 caracteres.
-// Timestamp (ms) en b[0:6], entropía en b[6:16].
 func newULID() string {
 	var b [16]byte
 	now := uint64(time.Now().UnixMilli())
@@ -55,9 +51,7 @@ func newULID() string {
 	return encodeCrockford(b[:])
 }
 
-// --- UUID v4 ---
 
-// newUUIDv4 genera un UUID v4 con crypto/rand.
 func newUUIDv4() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -69,14 +63,11 @@ func newUUIDv4() string {
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// --- API pública ---
 
-// NewRequestID genera un identificador de request: "req_" + ULID (26 chars).
 func NewRequestID() string {
 	return "req_" + newULID()
 }
 
-// NewScanID genera un identificador de scan: "scan_" + UUID v4.
 func NewScanID() string {
 	return "scan_" + newUUIDv4()
 }

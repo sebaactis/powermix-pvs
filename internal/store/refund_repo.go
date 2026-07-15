@@ -24,7 +24,6 @@ const columnasRefund = `refund_no, third_order_no, price_cents, motivo, status,
 	pvs_reverse_id, gs_refund_no, requested_at, completed_at, error,
 	created_at, updated_at`
 
-// Create persiste un nuevo reembolso.
 func (r *PostgresRefundRepository) Create(ctx context.Context, rf *domain.Refund) error {
 	query := `INSERT INTO refunds (refund_no, third_order_no, price_cents, motivo, status, gs_refund_no)
 		VALUES ($1, $2, $3, $4, $5, $6)

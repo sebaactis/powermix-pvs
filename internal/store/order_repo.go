@@ -19,13 +19,11 @@ type PostgresOrderRepository struct {
 	db *sqlx.DB
 }
 
-// NewPostgresOrderRepository crea un repositorio listo para usar.
 func NewPostgresOrderRepository(db *sqlx.DB) *PostgresOrderRepository {
 	return &PostgresOrderRepository{db: db}
 }
 
 // columnas usadas en SELECT y RETURNING.
-// Excluye id porque se auto-genera.
 const columnasOrden = `third_order_no, gs_order_no, device_id, device_no, object_id, price_cents,
 	pay_method, way_code, status, gs_order_status, pvs_status,
 	pvs_qr_id, pvs_qr_image, notify_url, gs_notified_at,
@@ -33,7 +31,6 @@ const columnasOrden = `third_order_no, gs_order_no, device_id, device_no, object
 	gs_completed_at, gs_cancelled_at, refunded_at,
 	failure_reason, request_id, created_at, updated_at`
 
-// Create persiste una nueva orden y asigna ID y CreatedAt.
 func (r *PostgresOrderRepository) Create(ctx context.Context, o *domain.Order) error {
 	query := `INSERT INTO orders (` + columnasOrden + `)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,now(),now())
@@ -75,7 +72,6 @@ func (r *PostgresOrderRepository) GetByGsOrderNo(ctx context.Context, gsOrderNo 
 	return o, nil
 }
 
-// ListPaymentConfirmedUnnotified devuelve pagos confirmados sin notify a GS.
 func (r *PostgresOrderRepository) ListPaymentConfirmedUnnotified(ctx context.Context, limit int) ([]domain.Order, error) {
 	query := `SELECT ` + columnasOrden + ` FROM orders
 		WHERE status = $1 AND gs_notified_at IS NULL
@@ -98,7 +94,6 @@ func (r *PostgresOrderRepository) ListPaymentConfirmedUnnotified(ctx context.Con
 	return ordenes, rows.Err()
 }
 
-// GetByPVSQrID busca una orden por el ID de QR de PVS.
 func (r *PostgresOrderRepository) GetByPVSQrID(ctx context.Context, qrID string) (*domain.Order, error) {
 	query := `SELECT ` + columnasOrden + ` FROM orders WHERE pvs_qr_id = $1`
 	o, err := r.escanearOrden(r.db.QueryRowContext(ctx, query, qrID))
@@ -109,7 +104,6 @@ func (r *PostgresOrderRepository) GetByPVSQrID(ctx context.Context, qrID string)
 }
 
 // UpdateStatus actualiza el estado interno de una orden.
-// Marca updated_at automaticamente.
 func (r *PostgresOrderRepository) UpdateStatus(ctx context.Context, orderNo string, status domain.OrderStatus) error {
 	result, err := r.db.ExecContext(ctx,
 		`UPDATE orders SET status = $1, updated_at = now() WHERE third_order_no = $2`,
@@ -134,7 +128,6 @@ func (r *PostgresOrderRepository) UpdateStatusAndFields(ctx context.Context, ord
 		return r.UpdateStatus(ctx, orderNo, status)
 	}
 
-	// Construimos SET dinamico
 	setParts := []string{"status = $1", "updated_at = now()"}
 	args := []interface{}{status}
 	i := 2
@@ -259,7 +252,6 @@ func (r *PostgresOrderRepository) escanearOrden(scanner interface {
 	return scanOrderRow(scanner)
 }
 
-// Helpers
 
 // nilIfVacio devuelve nil si s esta vacio, o s si no.
 // Para pasar NULL a la base de datos en lugar de string vacio.
@@ -270,7 +262,6 @@ func nilIfVacio(s string) interface{} {
 	return s
 }
 
-// nilIfZero devuelve nil si t es zero time.Time, o t si no.
 func nilIfZero(t time.Time) interface{} {
 	if t.IsZero() {
 		return nil

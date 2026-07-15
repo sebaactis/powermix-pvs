@@ -21,7 +21,6 @@ var (
 	transactions = make(map[string]*Transaction)
 )
 
-// writeOK responde envelope oficial PVS: { code, message, ok, data }.
 func writeOK(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -59,7 +58,6 @@ func main() {
 		})
 	})
 
-	// Present Mode: POST /external/connect/api/v1/qr/pvs
 	// Doc body: amount, externalId, reference. Response data: qrId, qrImage, qrRaw...
 	mux.HandleFunc("POST /external/connect/api/v1/qr/pvs", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

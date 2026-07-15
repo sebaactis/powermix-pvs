@@ -3,19 +3,17 @@ package ports
 import "context"
 
 // GSNotifyPaymentRequest es el POST saliente a notifyUrl (GS Open API v2).
-// Machine Server = GS; nosotros somos Third Party.
 type GSNotifyPaymentRequest struct {
 	NotifyURL     string // URL absoluta; no se concatena con baseURL
 	OrderNo       string // serial de GS
 	ThirdOrderNo  string // nuestro id
 	OrderStatus   string // "2" en este change (pago exitoso)
-	OrderTime     string // yyyy-MM-dd HH:mm:ss UTC
+	OrderTime     string // yyyy-MM-dd HH:mm:ss (America/Argentina/Buenos_Aires)
 	PayTime       string
 	TotalAmount   string
 	ChannelUserID string
 }
 
-// GSNotifyPaymentResponse es lo que nos interesa de la respuesta de GS.
 type GSNotifyPaymentResponse struct {
 	ReturnCode string
 	ReturnMsg  string

@@ -23,7 +23,6 @@ func NewRedactingHandler(inner slog.Handler, sensitiveKeys ...string) *Redacting
 	return &RedactingHandler{inner: inner, sensitive: s}
 }
 
-// Enabled delega en el handler interno.
 func (h *RedactingHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return h.inner.Enabled(ctx, level)
 }
@@ -47,7 +46,6 @@ func (h *RedactingHandler) Handle(ctx context.Context, r slog.Record) error {
 	return h.inner.Handle(ctx, newRecord)
 }
 
-// WithAttrs delega en el handler interno.
 func (h *RedactingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &RedactingHandler{
 		inner:     h.inner.WithAttrs(attrs),
@@ -55,7 +53,6 @@ func (h *RedactingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 }
 
-// WithGroup delega en el handler interno.
 func (h *RedactingHandler) WithGroup(name string) slog.Handler {
 	return &RedactingHandler{
 		inner:     h.inner.WithGroup(name),

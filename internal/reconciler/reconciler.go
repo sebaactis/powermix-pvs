@@ -12,7 +12,6 @@ import (
 )
 
 // PaymentNotifier avisa a GS un pago confirmado (best-effort).
-// OrderService implementa esta interfaz.
 type PaymentNotifier interface {
 	NotifyPaymentIfNeeded(ctx context.Context, order *domain.Order)
 }
@@ -32,7 +31,6 @@ type Reconciler struct {
 	notifyMinAge time.Duration // evita carrera con notify inline del webhook
 }
 
-// New crea un Reconciler listo para ejecutar.
 // notifier puede ser nil (no se reintenta notify a GS).
 func New(store ports.ReconcilerStore, orderRepo ports.OrderRepository,
 	pvsClient ports.PVSClient, notifier PaymentNotifier, interval time.Duration) *Reconciler {
@@ -48,7 +46,6 @@ func New(store ports.ReconcilerStore, orderRepo ports.OrderRepository,
 }
 
 // Run ejecuta el loop de reconciliacion. Bloquea hasta que ctx se cancele.
-// Llamar como goroutine: go rec.Run(ctx)
 func (r *Reconciler) Run(ctx context.Context) error {
 	logging.From(ctx).Info("reconciler iniciado", "interval", r.interval, "batchSize", r.batchSize)
 
@@ -67,7 +64,6 @@ func (r *Reconciler) Run(ctx context.Context) error {
 }
 
 // scan ejecuta una pasada completa del reconciler.
-// Escanea ordenes colgadas y despacha segun su estado.
 func (r *Reconciler) scan(ctx context.Context) {
 	scanID := logging.NewScanID()
 	ctx = logging.WithScanID(ctx, scanID)

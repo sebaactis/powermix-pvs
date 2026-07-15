@@ -2,7 +2,6 @@ package ports
 
 import "context"
 
-// PVSQRRequest es el payload para generar un QR en PVS (Service Mode).
 type PVSQRRequest struct {
 	Amount      int64  // monto en centavos
 	ExternalID  string // nuestro orderNo (PVS lo usa para idempotencia)
@@ -10,7 +9,6 @@ type PVSQRRequest struct {
 	CallbackURL string // donde PVS nos va a notificar el resultado
 }
 
-// PVSQRResponse es la respuesta de PVS al generar un QR.
 type PVSQRResponse struct {
 	QrID      string // ID interno del QR en PVS
 	QrImage   string // QR en base64 (lo que va a GS como qrUrl)
@@ -32,14 +30,12 @@ type PVSReverseResponse struct {
 	TxEID   string // id transacción reverse en PVS (data.txeId)
 }
 
-// PVSClient define las llamadas HTTP que hacemos hacia PVS.
 type PVSClient interface {
 	GenerateQR(ctx context.Context, req *PVSQRRequest) (*PVSQRResponse, error)
 	QueryStatus(ctx context.Context, qrID string) (*PVSQueryResponse, error)
 	Reverse(ctx context.Context, qrID string) (*PVSReverseResponse, error)
 }
 
-// TokenCache es un cache de tokens OAuth2 para PVS.
 // La implementacion usa singleflight.Group para evitar que N goroutines
 // pidan el token simultaneamente cuando expira.
 type TokenCache interface {

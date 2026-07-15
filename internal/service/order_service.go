@@ -13,10 +13,10 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/seba/vps-powermix/internal/logging"
-
 	"github.com/seba/vps-powermix/internal/domain"
+	"github.com/seba/vps-powermix/internal/logging"
 	"github.com/seba/vps-powermix/internal/ports"
+	"github.com/seba/vps-powermix/internal/timeutil"
 )
 
 // OrderService coordina la creación y ciclo de vida de una orden.
@@ -30,15 +30,12 @@ type OrderService struct {
 	dedupWindow time.Duration  // ventana de dedup (default 20s)
 }
 
-// Option permite configurar el servicio (functional options).
 type Option func(*OrderService)
 
-// ConQRExpiry cambia el tiempo de validez del QR.
 func ConQRExpiry(d time.Duration) Option {
 	return func(s *OrderService) { s.qrExpiry = d }
 }
 
-// ConDedupWindow cambia la ventana de deduplicación.
 func ConDedupWindow(d time.Duration) Option {
 	return func(s *OrderService) { s.dedupWindow = d }
 }
@@ -61,17 +58,11 @@ func NewOrderService(repo ports.OrderRepository, pvs ports.PVSClient,
 	return s
 }
 
-// FormatGSTime formatea timestamps al estilo GS: yyyy-MM-dd HH:mm:ss UTC.
+// FormatGSTime formatea timestamps al estilo GS en reloj ARG: yyyy-MM-dd HH:mm:ss.
 func FormatGSTime(t time.Time) string {
-	if t.IsZero() {
-		return ""
-	}
-	return t.UTC().Format("2006-01-02 15:04:05")
+	return timeutil.Format(t)
 }
 
-// --- Tipos de request/response (GS Open API v2) ---
-
-// CreateOrderRequest es el body de POST /order/qr.
 type CreateOrderRequest struct {
 	OrderNo     string `json:"orderNo"`     // serial de GS (requerido)
 	ObjectID    string `json:"objectId"`    // SKU (opcional en v2)
@@ -81,30 +72,25 @@ type CreateOrderRequest struct {
 	NotifyURL   string `json:"notifyUrl"`   // callback de pago hacia GS
 }
 
-// CreateOrderResponse es data de POST /order/qr.
 type CreateOrderResponse struct {
 	QrURL        string `json:"qrUrl"`        // base64 del QR (PVS qrImage → qrUrl)
 	OrderStatus  string `json:"orderStatus"`  // "1" = pendiente de pago
 	ThirdOrderNo string `json:"thirdOrderNo"` // nuestro id
 }
 
-// QueryStatusRequest es el body de POST /order/status.
 type QueryStatusRequest struct {
 	OrderNo      string `json:"orderNo"`      // serial GS
 	ThirdOrderNo string `json:"thirdOrderNo"` // nuestro id
 }
 
-// QueryStatusResponse es data de POST /order/status.
 type QueryStatusResponse struct {
 	OrderNo      string `json:"orderNo"`
 	ThirdOrderNo string `json:"thirdOrderNo"`
 	OrderStatus  string `json:"orderStatus"` // "1"…"6"
 }
 
-// FlexibleStatus acepta orderStatus como int o string en JSON.
 type FlexibleStatus string
 
-// UnmarshalJSON tolera "2" o 2.
 func (f *FlexibleStatus) UnmarshalJSON(b []byte) error {
 	b = bytesTrimSpace(b)
 	if len(b) == 0 || string(b) == "null" {
@@ -131,7 +117,6 @@ func bytesTrimSpace(b []byte) []byte {
 	return []byte(strings.TrimSpace(string(b)))
 }
 
-// CompleteOrderRequest es el body de POST /order/complete.
 type CompleteOrderRequest struct {
 	OrderNo        string         `json:"orderNo"`
 	ThirdOrderNo   string         `json:"thirdOrderNo"`
@@ -141,7 +126,6 @@ type CompleteOrderRequest struct {
 	OutStockTime   string         `json:"outStockTime"`
 }
 
-// CompleteOrderResponse es data de POST /order/complete.
 type CompleteOrderResponse struct {
 	OrderNo      string `json:"orderNo"`
 	ThirdOrderNo string `json:"thirdOrderNo"`
@@ -149,7 +133,6 @@ type CompleteOrderResponse struct {
 	ReturnMsg    string `json:"returnMsg"`
 }
 
-// CancelOrderRequest es el body de POST /order/cancel.
 type CancelOrderRequest struct {
 	OrderNo      string         `json:"orderNo"`
 	ThirdOrderNo string         `json:"thirdOrderNo"`
@@ -158,7 +141,6 @@ type CancelOrderRequest struct {
 	CancelTime   string         `json:"cancelTime"`
 }
 
-// CancelOrderResponse es data de POST /order/cancel.
 type CancelOrderResponse struct {
 	OrderNo      string `json:"orderNo"`
 	ThirdOrderNo string `json:"thirdOrderNo"`
@@ -195,7 +177,6 @@ type PVSWebhookPayer struct {
 // 1. Validar orderNo, subject, totalAmount, notifyUrl
 // 2. Idempotencia por gs_order_no si ya hay QR_SHOWN
 // 3. Crear orden (third_order_no nuestro + gs_order_no + notify_url)
-// 4. PVS GenerateQR
 // 5. QR_SHOWN + respuesta {qrUrl, orderStatus:"1", thirdOrderNo}
 func (s *OrderService) CreateOrder(ctx context.Context, req *CreateOrderRequest) (*CreateOrderResponse, error) {
 	if req.OrderNo == "" {
@@ -358,7 +339,6 @@ func (s *OrderService) HandlePVSWebhook(ctx context.Context, req *PVSWebhookRequ
 		return nil
 	}
 
-	// 3. Validar transicion a nivel de logica (CanTransitionTo)
 	if !orden.Status.CanTransitionTo(nuevoEstado) {
 		// Estado ya aplicado o transicion invalida. No-op silencioso.
 		return nil
@@ -420,7 +400,6 @@ func (s *OrderService) NotifyPaymentIfNeeded(ctx context.Context, orden *domain.
 	if orden.NotifyURL == "" || !orden.GsNotifiedAt.IsZero() {
 		return
 	}
-	// Solo pago confirmado (status "2" en el contrato GS).
 	if orden.Status != domain.OrderPaymentConfirmed {
 		return
 	}
@@ -626,7 +605,6 @@ func pvsStatusToOrderStatus(pvs domain.PVSStatus, actual domain.OrderStatus) dom
 
 // buscarOrdenReciente busca una orden con mismo dispositivo+producto+precio
 // creada en los últimos dedupWindow segundos. Devuelve nil si no encuentra.
-// Es la deduplicacion: si GS reenvia el mismo pedido rapido, devolvemos
 // el QR que ya generamos en vez de crear una orden nueva.
 func (s *OrderService) buscarOrdenReciente(ctx context.Context, deviceID, objectID string, montoCentavos int64) *domain.Order {
 	since := time.Now().Add(-s.dedupWindow)
@@ -638,7 +616,6 @@ func (s *OrderService) buscarOrdenReciente(ctx context.Context, deviceID, object
 	return orden
 }
 
-// parseAttach interpreta attach de GS: "deviceNo=E00375&deviceId=7678...".
 func parseAttach(attach string) (deviceNo, deviceID string) {
 	attach = strings.TrimSpace(attach)
 	if attach == "" {

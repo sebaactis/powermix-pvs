@@ -56,14 +56,11 @@ type RefundResponse struct {
 
 // Refund procesa una solicitud de reembolso de GS (GS Open API v2).
 //
-// Flujo:
 //  1. Validar request (refundNo, orderNo, thirdOrderNo, refundAmount)
 //  2. Buscar orden por thirdOrderNo
 //  3. Pair verify: orden.GsOrderNo == req.OrderNo
 //  4. Idempotencia: si ya existe este refundNo, devolver resultado mapeado
 //  5. Validar que la orden sea refundable (CanTransitionTo REFUND_PENDING)
-//  6. Guard: payment_confirmed_at debe estar seteado (hubo pago real)
-//  7. Crear registro de reembolso PENDING
 //  8. Llamar a PVS.Reverse(qrId)
 //     - Error    -> orden REFUND_FAILED, refund FAILED + error propagado
 //     - Rechazo  -> orden REFUND_FAILED, refund FAILED, status "fail"
@@ -72,7 +69,6 @@ type RefundResponse struct {
 // La confirmacion final del reembolso llega via webhook de PVS (stateId=4)
 // que mueve REFUND_PENDING -> REFUNDED. Recien ahi el refundStatus es "success".
 func (s *RefundService) Refund(ctx context.Context, req *RefundRequest) (*RefundResponse, error) {
-	// 1. Validar
 	if req.RefundNo == "" {
 		return nil, fmt.Errorf("%w: refundNo es obligatorio", domain.ErrInvalidInput)
 	}
@@ -90,7 +86,6 @@ func (s *RefundService) Refund(ctx context.Context, req *RefundRequest) (*Refund
 		return nil, domain.ErrInvalidAmount
 	}
 
-	// 2. Buscar orden
 	orden, err := s.orderRepo.GetByThirdOrderNo(ctx, req.ThirdOrderNo)
 	if err != nil {
 		return nil, fmt.Errorf("buscando orden %q: %w", req.ThirdOrderNo, err)
@@ -111,17 +106,14 @@ func (s *RefundService) Refund(ctx context.Context, req *RefundRequest) (*Refund
 		return s.buildRefundResponse(orden, existente), nil
 	}
 
-	// 5. Validar que la orden sea reembolsable
 	if !orden.Status.CanTransitionTo(domain.OrderRefundPending) {
 		return nil, domain.ErrOrderNotRefundable
 	}
 
-	// 6. Guard: debe haber un pago confirmado registrado
 	if orden.PaymentConfirmedAt.IsZero() {
 		return nil, domain.ErrOrderNotRefundable
 	}
 
-	// 7. Crear registro de reembolso PENDING
 	refund := &domain.Refund{
 		RefundNo:     req.RefundNo,
 		ThirdOrderNo: orden.ThirdOrderNo,
@@ -134,10 +126,8 @@ func (s *RefundService) Refund(ctx context.Context, req *RefundRequest) (*Refund
 		return nil, fmt.Errorf("creando reembolso: %w", err)
 	}
 
-	// 8. Llamar a PVS para revertir el pago
 	pvsResp, err := s.pvsClient.Reverse(ctx, orden.PvsQrID)
 	if err != nil {
-		// Error de red/infra: marcar como fallido y propagar
 		_ = s.refundRepo.UpdateStatus(ctx, req.RefundNo, domain.RefundFailed)
 		_ = s.orderRepo.UpdateStatus(ctx, orden.ThirdOrderNo, domain.OrderRefundFailed)
 		return nil, fmt.Errorf("reverse en PVS: %w", err)
@@ -224,7 +214,6 @@ func mapRefundStatusForQuery(orden *domain.Order, refund *domain.Refund) (status
 	}
 }
 
-// --- RefundStatus (POST /order/refundStatus) ---
 
 // RefundStatusRequest es el body de POST /order/refundStatus.
 type RefundStatusRequest struct {

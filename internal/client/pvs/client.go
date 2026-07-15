@@ -30,7 +30,6 @@ type Cliente struct {
 	rateLimiter *rate.Limiter
 }
 
-// New crea un Cliente listo para usar.
 // Opciones por defecto: timeout 10s, rate limit 50 req/s.
 func New(baseURL string, clientID, clientSecret string, opts ...Opcion) *Cliente {
 	c := &Cliente{
@@ -47,15 +46,12 @@ func New(baseURL string, clientID, clientSecret string, opts ...Opcion) *Cliente
 	return c
 }
 
-// Opcion permite configurar el cliente (functional options pattern).
 type Opcion func(*Cliente)
 
-// ConHTTPClient reemplaza el http.Client por defecto (util en tests).
 func ConHTTPClient(hc *http.Client) Opcion {
 	return func(c *Cliente) { c.httpClient = hc }
 }
 
-// ConRateLimit cambia el rate limiter (requests/segundo, burst).
 func ConRateLimit(rps int, burst int) Opcion {
 	return func(c *Cliente) {
 		c.rateLimiter = rate.NewLimiter(rate.Limit(rps), burst)
@@ -63,7 +59,6 @@ func ConRateLimit(rps int, burst int) Opcion {
 }
 
 // GenerateQR implementa ports.PVSClient.
-// Endpoint real: POST /external/connect/api/v1/qr/pvs
 func (c *Cliente) GenerateQR(ctx context.Context, req *ports.PVSQRRequest) (*ports.PVSQRResponse, error) {
 	if err := c.rateLimiter.Wait(ctx); err != nil {
 		return nil, fmt.Errorf("rate limit: %w", err)
@@ -319,7 +314,6 @@ func (c *Cliente) mapearError(statusCode int, body []byte) error {
 }
 
 // pvsEnvelope es la caja que PVS pone alrededor de toda respuesta OK.
-// Doc: { code, message, ok, data }
 type pvsEnvelope struct {
 	Code    string          `json:"code"`
 	Message string          `json:"message"`
@@ -328,7 +322,6 @@ type pvsEnvelope struct {
 }
 
 // decodePVSData abre envelope y devuelve data tipada.
-// Uso: dest, err := decodePVSData[MiTipo](body)
 func decodePVSData[T any](body []byte) (T, error) {
 	var zero T
 
@@ -362,7 +355,6 @@ func (e *httpStatusError) CodigoHTTP() int { return e.codigoHTTP }
 // Garantia de compilacion: Cliente implementa ports.PVSClient
 var _ ports.PVSClient = (*Cliente)(nil)
 
-// --- TokenCache con Singleflight ---
 
 // TokenCache implementa ports.TokenCache usando OAuth2 client_credentials
 // con singleflight para evitar N goroutines pidiendo token a la vez.
@@ -376,7 +368,6 @@ type TokenCache struct {
 	sf           singleflight.Group
 }
 
-// NewTokenCache crea un cache de token OAuth2.
 func NewTokenCache(baseURL, clientID, clientSecret string) *TokenCache {
 	return &TokenCache{
 		baseURL:      baseURL,
@@ -406,7 +397,6 @@ func (c *TokenCache) Get(ctx context.Context) (string, error) {
 	return result.(string), nil
 }
 
-// Invalidate fuerza a Get() a pedir un token nuevo en el proximo llamado.
 func (c *TokenCache) Invalidate(ctx context.Context) {
 	c.mu.Lock()
 	c.token = ""
