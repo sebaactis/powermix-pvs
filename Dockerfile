@@ -16,6 +16,7 @@ COPY . .
 # Compilar binarios de produccion y de mock de forma estatica
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o vps-powermix ./cmd/server
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o mockpvs ./cmd/mockpvs
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o mockgs ./cmd/mockgs
 
 # Run stage
 FROM alpine:3.19
@@ -28,9 +29,11 @@ RUN apk add --no-cache ca-certificates tzdata
 # Copiar binarios desde el builder
 COPY --from=builder /app/vps-powermix .
 COPY --from=builder /app/mockpvs .
+COPY --from=builder /app/mockgs .
 
 EXPOSE 8080
 EXPOSE 8081
+EXPOSE 8082
 
 # Comando por defecto (ejecuta el Bridge)
 CMD ["./vps-powermix"]

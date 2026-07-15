@@ -3,6 +3,7 @@ package pvs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/seba/vps-powermix/internal/domain"
 	"github.com/seba/vps-powermix/internal/ports"
 )
 
@@ -112,6 +114,41 @@ func TestGenerateQR_Error4xx(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("se esperaba error, pero fue nil")
+	}
+}
+
+func TestMapearError_4xx_PVSBusinessError(t *testing.T) {
+	c := clientePrepago("http://unused")
+	err := c.mapearError(http.StatusBadRequest,
+		[]byte(`{"code":"E_007","message":"Monto invalido","ok":false}`))
+
+	var be *domain.PVSBusinessError
+	if !errors.As(err, &be) {
+		t.Fatalf("esperaba *domain.PVSBusinessError, got %T: %v", err, err)
+	}
+	if be.StatusCode != http.StatusBadRequest {
+		t.Errorf("StatusCode = %d, esperaba 400", be.StatusCode)
+	}
+	if be.Code != "E_007" || be.Message != "Monto invalido" {
+		t.Errorf("Code/Message = %q/%q, esperaba E_007/Monto invalido", be.Code, be.Message)
+	}
+	if got := err.Error(); got != "E_007: Monto invalido" {
+		t.Errorf("Error() = %q", got)
+	}
+}
+
+func TestMapearError_5xx_Interno(t *testing.T) {
+	c := clientePrepago("http://unused")
+	err := c.mapearError(http.StatusInternalServerError,
+		[]byte(`{"code":"X","message":"boom","ok":false}`))
+
+	var be *domain.PVSBusinessError
+	if errors.As(err, &be) {
+		t.Fatalf("5xx NO debe ser PVSBusinessError, got %T", err)
+	}
+	var hse *httpStatusError
+	if !errors.As(err, &hse) || hse.CodigoHTTP() != 500 {
+		t.Fatalf("esperaba *httpStatusError 500, got %T: %v", err, err)
 	}
 }
 

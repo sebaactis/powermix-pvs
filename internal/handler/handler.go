@@ -18,7 +18,6 @@ import (
 	"github.com/seba/vps-powermix/internal/service"
 )
 
-
 type OrderService interface {
 	CreateOrder(ctx context.Context, req *service.CreateOrderRequest) (*service.CreateOrderResponse, error)
 	QueryStatus(ctx context.Context, req *service.QueryStatusRequest) (*service.QueryStatusResponse, error)
@@ -67,7 +66,6 @@ func (h *Handler) Routes() http.Handler {
 	return logging.RequestIDMiddleware(metricsMiddleware(recoveryMiddleware(loggingMiddleware(mux))))
 }
 
-
 type gsEnvelope struct {
 	Code int         `json:"code"`
 	Msg  string      `json:"msg"`
@@ -87,7 +85,6 @@ func writeGSOK(w http.ResponseWriter, data interface{}) {
 func writeGSErr(w http.ResponseWriter, httpStatus int, msg string) {
 	writeGS(w, httpStatus, 400, msg, nil)
 }
-
 
 // Por ahora reusa CreateOrderRequest del service (PR-B alineara campos v2).
 func (h *Handler) CreateOrder(w http.ResponseWriter, r *http.Request) {
@@ -198,7 +195,6 @@ func (h *Handler) RefundStatus(w http.ResponseWriter, r *http.Request) {
 	writeGSOK(w, resp)
 }
 
-
 // PVSWebhook maneja POST /webhook/pvs — callback oficial PVS.
 // Doc: POST {{HOST}}?qr.reference=ref body {status APPROVED|REJECTED, qrId, ...}.
 func (h *Handler) PVSWebhook(w http.ResponseWriter, r *http.Request) {
@@ -218,7 +214,6 @@ func (h *Handler) PVSWebhook(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-
 func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.PingContext(r.Context()); err != nil {
 		respondJSON(w, http.StatusServiceUnavailable, map[string]string{
@@ -229,7 +224,6 @@ func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
 	}
 	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
-
 
 func respondJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
@@ -248,7 +242,11 @@ func respondError(w http.ResponseWriter, status int, msg string) {
 }
 
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
+	var pvsBusinessErr *domain.PVSBusinessError
 	switch {
+	case errors.As(err, &pvsBusinessErr):
+		writeGSErr(w, pvsBusinessErr.StatusCode, pvsBusinessErr.Error())
+
 	case errors.Is(err, domain.ErrOrderNotFound),
 		errors.Is(err, domain.ErrRefundNotFound):
 		writeGSErr(w, http.StatusNotFound, err.Error())
@@ -267,7 +265,6 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		writeGS(w, http.StatusInternalServerError, 400, "error interno", nil)
 	}
 }
-
 
 func recoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
