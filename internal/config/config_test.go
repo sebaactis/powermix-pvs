@@ -190,6 +190,150 @@ func TestGetEnvBoolAcceptaVariosValores(t *testing.T) {
 	}
 }
 
+// setRequeridasParaKeepaliveTest setea solo las variables obligatorias
+// de Load() para poder aislar los tests de keepalive sin arrastrar
+// el resto de la config.
+func setRequeridasParaKeepaliveTest(t *testing.T) {
+	t.Helper()
+	t.Setenv("DATABASE_URL", "postgres://localhost/test")
+	t.Setenv("GS_BASE_URL", "https://gs.test.com")
+	t.Setenv("GS_KEY", "key")
+	t.Setenv("GS_SECRET", "secret")
+	t.Setenv("PVS_CLIENT_ID", "client-id")
+	t.Setenv("PVS_CLIENT_SECRET", "secret")
+	t.Setenv("PVS_CALLBACK_URL", "https://test.com/webhook")
+}
+
+// TestKeepaliveURL_DesdeRenderExternalURL: Render inyecta
+// RENDER_EXTERNAL_URL automaticamente; el keepalive debe armar
+// la URL de healthz a partir de ella (zero-config en Render).
+func TestKeepaliveURL_DesdeRenderExternalURL(t *testing.T) {
+	setRequeridasParaKeepaliveTest(t)
+	t.Setenv("RENDER_EXTERNAL_URL", "https://vps-powermix.onrender.com")
+	t.Setenv("KEEPALIVE_URL", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+	want := "https://vps-powermix.onrender.com/healthz"
+	if cfg.KeepaliveURL != want {
+		t.Errorf("KeepaliveURL = %q, se esperaba %q", cfg.KeepaliveURL, want)
+	}
+}
+
+// TestKeepaliveURL_NormalizaTrailingSlash: si RENDER_EXTERNAL_URL
+// viene con slash final, no debe duplicar el slash antes de /healthz.
+func TestKeepaliveURL_NormalizaTrailingSlash(t *testing.T) {
+	setRequeridasParaKeepaliveTest(t)
+	t.Setenv("RENDER_EXTERNAL_URL", "https://vps-powermix.onrender.com/")
+	t.Setenv("KEEPALIVE_URL", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+	want := "https://vps-powermix.onrender.com/healthz"
+	if cfg.KeepaliveURL != want {
+		t.Errorf("KeepaliveURL = %q, se esperaba %q (sin slash duplicado)",
+			cfg.KeepaliveURL, want)
+	}
+}
+
+// TestKeepaliveURL_OverrideManual: KEEPALIVE_URL siempre gana sobre
+// RENDER_EXTERNAL_URL, para permitir override o uso fuera de Render.
+func TestKeepaliveURL_OverrideManual(t *testing.T) {
+	setRequeridasParaKeepaliveTest(t)
+	t.Setenv("RENDER_EXTERNAL_URL", "https://vps-powermix.onrender.com")
+	t.Setenv("KEEPALIVE_URL", "https://otro-dominio.com/ping")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+	want := "https://otro-dominio.com/ping"
+	if cfg.KeepaliveURL != want {
+		t.Errorf("KeepaliveURL = %q, se esperaba override %q",
+			cfg.KeepaliveURL, want)
+	}
+}
+
+// TestKeepaliveURL_VacioSiNinguno: sin RENDER_EXTERNAL_URL ni
+// KEEPALIVE_URL, el keepalive queda deshabilitado (URL vacia).
+func TestKeepaliveURL_VacioSiNinguno(t *testing.T) {
+	setRequeridasParaKeepaliveTest(t)
+	t.Setenv("RENDER_EXTERNAL_URL", "")
+	t.Setenv("KEEPALIVE_URL", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+	if cfg.KeepaliveURL != "" {
+		t.Errorf("KeepaliveURL = %q, se esperaba vacio (deshabilitado)",
+			cfg.KeepaliveURL)
+	}
+}
+
+// TestKeepaliveInterval_Default30s: sin KEEPALIVE_INTERVAL_SEC,
+// el intervalo por defecto debe ser 30 segundos.
+func TestKeepaliveInterval_Default30s(t *testing.T) {
+	setRequeridasParaKeepaliveTest(t)
+	t.Setenv("KEEPALIVE_INTERVAL_SEC", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+	if cfg.KeepaliveInterval != 30*time.Second {
+		t.Errorf("KeepaliveInterval = %v, se esperaba 30s", cfg.KeepaliveInterval)
+	}
+}
+
+// TestKeepaliveInterval_Custom: KEEPALIVE_INTERVAL_SEC overridea el default.
+func TestKeepaliveInterval_Custom(t *testing.T) {
+	setRequeridasParaKeepaliveTest(t)
+	t.Setenv("KEEPALIVE_INTERVAL_SEC", "10")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+	if cfg.KeepaliveInterval != 10*time.Second {
+		t.Errorf("KeepaliveInterval = %v, se esperaba 10s", cfg.KeepaliveInterval)
+	}
+}
+
+func TestLogHTTPBodies_DefaultTrue(t *testing.T) {
+	setRequeridasParaKeepaliveTest(t)
+	t.Setenv("LOG_HTTP_BODIES", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+	if !cfg.LogHTTPBodies {
+		t.Fatal("LogHTTPBodies default debe ser true")
+	}
+}
+
+func TestLogHTTPBodies_CanDisable(t *testing.T) {
+	setRequeridasParaKeepaliveTest(t)
+	t.Setenv("LOG_HTTP_BODIES", "false")
+	t.Setenv("LOG_HTTP_BODY_MAX_BYTES", "4096")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("error inesperado: %v", err)
+	}
+	if cfg.LogHTTPBodies {
+		t.Fatal("LogHTTPBodies debia ser false")
+	}
+	if cfg.LogHTTPBodyMaxBytes != 4096 {
+		t.Fatalf("LogHTTPBodyMaxBytes = %d, want 4096", cfg.LogHTTPBodyMaxBytes)
+	}
+}
+
 // Helpers
 
 func contiene(s, substr string) bool {

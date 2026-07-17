@@ -1,9 +1,11 @@
 package pvs
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -405,5 +407,102 @@ func TestDecodePVSData_SinData(t *testing.T) {
 	_, err := decodePVSData[struct{}](body)
 	if err == nil {
 		t.Fatal("esperaba error sin data")
+	}
+}
+
+func captureSlog(t *testing.T) (*bytes.Buffer, func()) {
+	t.Helper()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	prev := slog.Default()
+	slog.SetDefault(logger)
+	return &buf, func() { slog.SetDefault(prev) }
+}
+
+func TestGenerateQR_LogsSanitizedBodies(t *testing.T) {
+	buf, restore := captureSlog(t)
+	defer restore()
+
+	// qrImage largo para forzar marker de truncate en el log
+	longQR := strings.Repeat("A", 300)
+	mockPVS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"code": "200", "message": "OK", "ok": true,
+			"data": map[string]string{
+				"qrId":    "qr_log_1",
+				"qrImage": longQR,
+			},
+		})
+	}))
+	defer mockPVS.Close()
+
+	client := clientePrepago(mockPVS.URL, ConRateLimit(1000, 1000))
+	_, err := client.GenerateQR(context.Background(), &ports.PVSQRRequest{
+		Amount:     10000,
+		ExternalID: "order-log-001",
+		Reference:  "ref-log-001",
+	})
+	if err != nil {
+		t.Fatalf("GenerateQR: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "msg=pvs.http.request") {
+		t.Fatalf("missing pvs.http.request: %s", out)
+	}
+	if !strings.Contains(out, "msg=pvs.http.response") {
+		t.Fatalf("missing pvs.http.response: %s", out)
+	}
+	if !strings.Contains(out, "order-log-001") {
+		t.Fatalf("request externalId not in log: %s", out)
+	}
+	if strings.Contains(out, longQR) {
+		t.Fatalf("raw qrImage leaked into logs: %s", out)
+	}
+	if !strings.Contains(out, "[truncated") {
+		t.Fatalf("expected truncated marker for qrImage: %s", out)
+	}
+}
+
+func TestFetchToken_RedactsAccessTokenInLogs(t *testing.T) {
+	buf, restore := captureSlog(t)
+	defer restore()
+
+	const secretToken = "super-secret-access-token-xyz"
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": secretToken,
+			"expires_in":   3600,
+		})
+	}))
+	defer mock.Close()
+
+	cache := NewTokenCache(mock.URL, "cid", "csecret")
+	tok, err := cache.fetchToken(context.Background())
+	if err != nil {
+		t.Fatalf("fetchToken: %v", err)
+	}
+	if tok != secretToken {
+		t.Fatalf("token en memoria = %q", tok)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "msg=pvs.http.request") {
+		t.Fatalf("missing oauth request log: %s", out)
+	}
+	if !strings.Contains(out, "msg=pvs.http.response") {
+		t.Fatalf("missing oauth response log: %s", out)
+	}
+	if strings.Contains(out, secretToken) {
+		t.Fatalf("access_token leaked in logs: %s", out)
+	}
+	if strings.Contains(out, "csecret") {
+		t.Fatalf("client_secret leaked in logs: %s", out)
+	}
+	// token sigue en memoria para uso real
+	if cache.token != secretToken {
+		t.Fatalf("cache token broken")
 	}
 }

@@ -8,16 +8,18 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"strings"
 
 	"github.com/seba/vps-powermix/internal/domain"
 	"github.com/seba/vps-powermix/internal/logging"
 	"github.com/seba/vps-powermix/internal/service"
 )
-
 
 type OrderService interface {
 	CreateOrder(ctx context.Context, req *service.CreateOrderRequest) (*service.CreateOrderResponse, error)
@@ -67,7 +69,6 @@ func (h *Handler) Routes() http.Handler {
 	return logging.RequestIDMiddleware(metricsMiddleware(recoveryMiddleware(loggingMiddleware(mux))))
 }
 
-
 type gsEnvelope struct {
 	Code int         `json:"code"`
 	Msg  string      `json:"msg"`
@@ -87,7 +88,6 @@ func writeGSOK(w http.ResponseWriter, data interface{}) {
 func writeGSErr(w http.ResponseWriter, httpStatus int, msg string) {
 	writeGS(w, httpStatus, 400, msg, nil)
 }
-
 
 // Por ahora reusa CreateOrderRequest del service (PR-B alineara campos v2).
 func (h *Handler) CreateOrder(w http.ResponseWriter, r *http.Request) {
@@ -198,7 +198,6 @@ func (h *Handler) RefundStatus(w http.ResponseWriter, r *http.Request) {
 	writeGSOK(w, resp)
 }
 
-
 // PVSWebhook maneja POST /webhook/pvs — callback oficial PVS.
 // Doc: POST {{HOST}}?qr.reference=ref body {status APPROVED|REJECTED, qrId, ...}.
 func (h *Handler) PVSWebhook(w http.ResponseWriter, r *http.Request) {
@@ -218,7 +217,6 @@ func (h *Handler) PVSWebhook(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-
 func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
 	if err := h.db.PingContext(r.Context()); err != nil {
 		respondJSON(w, http.StatusServiceUnavailable, map[string]string{
@@ -229,7 +227,6 @@ func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
 	}
 	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
-
 
 func respondJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
@@ -268,7 +265,6 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
-
 func recoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
@@ -282,10 +278,79 @@ func recoveryMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+// shouldLogHTTPBody limita el body log a endpoints GS/PVS.
+// /healthz y /metrics quedan fuera (ruido + sin valor de debug de negocio).
+func shouldLogHTTPBody(path string) bool {
+	return strings.HasPrefix(path, "/order/") || path == "/webhook/pvs"
+}
+
+// bodyCaptureWriter copia el response body al buffer sin romper el write real.
+type bodyCaptureWriter struct {
+	http.ResponseWriter
+	status int
+	buf    bytes.Buffer
+}
+
+func (w *bodyCaptureWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *bodyCaptureWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	_, _ = w.buf.Write(b)
+	return w.ResponseWriter.Write(b)
+}
+
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		logging.From(r.Context()).Info("request", "method", r.Method, "path", r.URL.Path,
-			"remote", r.RemoteAddr)
-		next.ServeHTTP(w, r)
+		log := logging.From(r.Context())
+		path := r.URL.Path
+
+		// healthz / metrics: log liviano, sin body
+		if !shouldLogHTTPBody(path) {
+			log.Info("http.request",
+				"method", r.Method,
+				"path", path,
+				"remote", r.RemoteAddr,
+			)
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		reqBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			log.Warn("http.request body read error",
+				"error", err, "method", r.Method, "path", path)
+			reqBody = nil
+		}
+		_ = r.Body.Close()
+		// Handler sigue pudiendo leer el body.
+		r.Body = io.NopCloser(bytes.NewReader(reqBody))
+
+		reqAttrs := []any{
+			"method", r.Method,
+			"path", path,
+			"remote", r.RemoteAddr,
+		}
+		if body, ok := logging.FormatBodyForLog(reqBody); ok {
+			reqAttrs = append(reqAttrs, "body", body)
+		}
+		log.Info("http.request", reqAttrs...)
+
+		cw := &bodyCaptureWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(cw, r)
+
+		resAttrs := []any{
+			"method", r.Method,
+			"path", path,
+			"status", cw.status,
+		}
+		if body, ok := logging.FormatBodyForLog(cw.buf.Bytes()); ok {
+			resAttrs = append(resAttrs, "body", body)
+		}
+		log.Info("http.response", resAttrs...)
 	})
 }

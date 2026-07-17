@@ -18,6 +18,8 @@ import (
 	pvsclient "github.com/seba/vps-powermix/internal/client/pvs"
 	"github.com/seba/vps-powermix/internal/config"
 	"github.com/seba/vps-powermix/internal/handler"
+	"github.com/seba/vps-powermix/internal/keepalive"
+	"github.com/seba/vps-powermix/internal/logging"
 	"github.com/seba/vps-powermix/internal/reconciler"
 	"github.com/seba/vps-powermix/internal/service"
 	"github.com/seba/vps-powermix/internal/store"
@@ -34,7 +36,13 @@ func main() {
 		"token", "secret", "password", "api_key",
 	)
 	slog.SetDefault(slog.New(logHandler))
-	slog.Info("iniciando servidor", "addr", cfg.HTTPAddr, "gs_enabled", cfg.GSEnabled)
+
+	logging.ConfigureHTTPBodyLogging(cfg.LogHTTPBodies, cfg.LogHTTPBodyMaxBytes)
+	slog.Info("iniciando servidor",
+		"addr", cfg.HTTPAddr,
+		"gs_enabled", cfg.GSEnabled,
+		"log_http_bodies", cfg.LogHTTPBodies,
+	)
 
 	db, err := sqlx.Connect("postgres", timeutil.WithDSNTimezone(cfg.DatabaseURL))
 	if err != nil {
@@ -65,12 +73,29 @@ func main() {
 	h := handler.New(orderSvc, refundSvc, db)
 	mux := h.Routes()
 
+	// rootCtx se cancela durante el graceful shutdown para que los workers
+	// en background (reconciler, keepalive) se detengan junto con el server,
+	// en vez de quedar huerfanos hasta que el proceso termine.
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+
 	if cfg.ReconcilerEnabled {
 		rec := reconciler.New(reconcilerStore, orderRepo, pvsClient, orderSvc,
 			cfg.ReconcilerInterval)
-		go rec.Run(context.Background())
+		go rec.Run(rootCtx)
 		slog.Info("reconciler iniciado en background",
 			"interval", cfg.ReconcilerInterval)
+	}
+
+	// Keepalive: evita el spin-down por inactividad en plataformas free
+	// (ej. Render). Solo arranca si hay una URL publica configurada.
+	if cfg.KeepaliveURL != "" {
+		go keepalive.Run(rootCtx, keepalive.Options{
+			URL:      cfg.KeepaliveURL,
+			Interval: cfg.KeepaliveInterval,
+		})
+		slog.Info("keepalive iniciado en background",
+			"url", cfg.KeepaliveURL, "interval", cfg.KeepaliveInterval)
 	}
 
 	srv := &http.Server{
@@ -95,6 +120,9 @@ func main() {
 
 	sig := <-quit
 	slog.Info("senal recibida, apagando servidor", "signal", sig)
+
+	// Detiene primero los workers en background; luego cierra el server HTTP.
+	rootCancel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

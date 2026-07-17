@@ -1,13 +1,16 @@
 package gs
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -148,4 +151,59 @@ func TestSignRequest_HeaderOrderNoImporta(t *testing.T) {
 
 	SignRequest(req1, key, secret)
 	SignRequest(req2, key, secret)
+}
+
+func TestNotifyPayment_LogsBodies(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	prev := slog.Default()
+	slog.SetDefault(logger)
+	defer slog.SetDefault(prev)
+
+	mockGS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"code": 200,
+			"msg":  "ok",
+			"data": map[string]string{
+				"returnCode": "success",
+				"returnMsg":  "paid",
+			},
+		})
+	}))
+	defer mockGS.Close()
+
+	client := New("https://unused.example", "test-key", "test-secret")
+	_, err := client.NotifyPayment(context.Background(), &ports.GSNotifyPaymentRequest{
+		NotifyURL:     mockGS.URL,
+		OrderNo:       "GS-LOG-1",
+		ThirdOrderNo:  "ord-log-1",
+		OrderStatus:   "2",
+		TotalAmount:   "100.00",
+		OrderTime:     "2026-01-01 12:00:00",
+		PayTime:       "2026-01-01 12:01:00",
+		ChannelUserID: "u1",
+	})
+	if err != nil {
+		t.Fatalf("NotifyPayment: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "msg=gs.http.request") {
+		t.Fatalf("missing gs.http.request: %s", out)
+	}
+	if !strings.Contains(out, "msg=gs.http.response") {
+		t.Fatalf("missing gs.http.response: %s", out)
+	}
+	if !strings.Contains(out, "GS-LOG-1") {
+		t.Fatalf("orderNo not in request log: %s", out)
+	}
+	if !strings.Contains(out, "status_code=200") {
+		t.Fatalf("status missing: %s", out)
+	}
+	// secret de firma no debe aparecer
+	if strings.Contains(out, "test-secret") {
+		t.Fatalf("secret leaked: %s", out)
+	}
 }

@@ -94,27 +94,20 @@ func (c *Cliente) GenerateQR(ctx context.Context, req *ports.PVSQRRequest) (*por
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	logging.From(ctx).Debug("pvs.call.start", "endpoint", endpoint, "method", "POST")
+	logPVSRequest(ctx, "POST", endpoint, bodyBytes)
 
 	start := time.Now()
 	resp, err := c.doConRetry(ctx, httpReq)
 	durationMs := time.Since(start).Milliseconds()
 
 	if err != nil {
-		logging.From(ctx).Debug("pvs.call.response",
-			"status_code", 0,
-			"duration_ms", durationMs,
-		)
+		logPVSResponse(ctx, "POST", endpoint, 0, durationMs, nil)
 		return nil, &httpStatusError{err: err, codigoHTTP: 0}
 	}
 	defer resp.Body.Close()
 
-	logging.From(ctx).Debug("pvs.call.response",
-		"status_code", resp.StatusCode,
-		"duration_ms", durationMs,
-	)
-
 	respBytes, _ := io.ReadAll(resp.Body)
+	logPVSResponse(ctx, "POST", endpoint, resp.StatusCode, durationMs, respBytes)
 
 	if resp.StatusCode >= 400 {
 		return nil, c.mapearError(resp.StatusCode, respBytes)
@@ -164,27 +157,20 @@ func (c *Cliente) QueryStatus(ctx context.Context, qrID string) (*ports.PVSQuery
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 
-	logging.From(ctx).Debug("pvs.call.start", "endpoint", url, "method", "GET")
+	logPVSRequest(ctx, "GET", url, nil)
 
 	start := time.Now()
 	resp, err := c.doConRetry(ctx, httpReq)
 	durationMs := time.Since(start).Milliseconds()
 
 	if err != nil {
-		logging.From(ctx).Debug("pvs.call.response",
-			"status_code", 0,
-			"duration_ms", durationMs,
-		)
+		logPVSResponse(ctx, "GET", url, 0, durationMs, nil)
 		return nil, &httpStatusError{err: err, codigoHTTP: 0}
 	}
 	defer resp.Body.Close()
 
-	logging.From(ctx).Debug("pvs.call.response",
-		"status_code", resp.StatusCode,
-		"duration_ms", durationMs,
-	)
-
 	respBytes, _ := io.ReadAll(resp.Body)
+	logPVSResponse(ctx, "GET", url, resp.StatusCode, durationMs, respBytes)
 
 	if resp.StatusCode >= 400 {
 		return nil, c.mapearError(resp.StatusCode, respBytes)
@@ -229,34 +215,27 @@ func (c *Cliente) Reverse(ctx context.Context, qrID string) (*ports.PVSReverseRe
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	logging.From(ctx).Debug("pvs.call.start", "endpoint", endpoint, "method", "POST")
+	logPVSRequest(ctx, "POST", endpoint, bodyBytes)
 
 	start := time.Now()
 	resp, err := c.doConRetry(ctx, httpReq)
 	durationMs := time.Since(start).Milliseconds()
 
 	if err != nil {
-		logging.From(ctx).Debug("pvs.call.response",
-			"status_code", 0,
-			"duration_ms", durationMs,
-		)
+		logPVSResponse(ctx, "POST", endpoint, 0, durationMs, nil)
 		return nil, &httpStatusError{err: err, codigoHTTP: 0}
 	}
 	defer resp.Body.Close()
 
-	logging.From(ctx).Debug("pvs.call.response",
-		"status_code", resp.StatusCode,
-		"duration_ms", durationMs,
-	)
-
-	if resp.StatusCode >= 400 {
-		respBytes, _ := io.ReadAll(resp.Body)
-		return nil, c.mapearError(resp.StatusCode, respBytes)
-	}
-
 	respBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
+		logPVSResponse(ctx, "POST", endpoint, resp.StatusCode, durationMs, nil)
 		return nil, fmt.Errorf("leyendo respuesta reverse PVS: %w", err)
+	}
+	logPVSResponse(ctx, "POST", endpoint, resp.StatusCode, durationMs, respBytes)
+
+	if resp.StatusCode >= 400 {
+		return nil, c.mapearError(resp.StatusCode, respBytes)
 	}
 
 	// Doc PVS: reverse también viene en envelope { code, ok, data:{ txeId } }
@@ -355,7 +334,6 @@ func (e *httpStatusError) CodigoHTTP() int { return e.codigoHTTP }
 // Garantia de compilacion: Cliente implementa ports.PVSClient
 var _ ports.PVSClient = (*Cliente)(nil)
 
-
 // TokenCache implementa ports.TokenCache usando OAuth2 client_credentials
 // con singleflight para evitar N goroutines pidiendo token a la vez.
 type TokenCache struct {
@@ -409,28 +387,38 @@ func (c *TokenCache) Invalidate(ctx context.Context) {
 // fetchToken hace POST a /oauth2/token con client_credentials.
 // Doc PVS: HTTP Basic (clientID:secret) + form solo grant_type=client_credentials.
 // No mandar client_id/client_secret en el body.
+// Logs: body form + response sanitizada. NUNCA loguea Basic auth ni client_secret.
 func (c *TokenCache) fetchToken(ctx context.Context) (string, error) {
 	form := url.Values{
 		"grant_type": {"client_credentials"},
 	}
+	formBody := form.Encode()
+	oauthURL := c.baseURL + "/oauth2/token"
 
 	req, err := http.NewRequestWithContext(ctx, "POST",
-		c.baseURL+"/oauth2/token",
-		strings.NewReader(form.Encode()))
+		oauthURL,
+		strings.NewReader(formBody))
 	if err != nil {
 		return "", fmt.Errorf("creando request de token: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.SetBasicAuth(c.clientID, c.clientSecret)
 
+	logPVSRequest(ctx, "POST", oauthURL, []byte(formBody))
+
+	start := time.Now()
 	resp, err := http.DefaultClient.Do(req)
+	durationMs := time.Since(start).Milliseconds()
 	if err != nil {
+		logPVSResponse(ctx, "POST", oauthURL, 0, durationMs, nil)
 		return "", fmt.Errorf("solicitando token: %w", err)
 	}
 	defer resp.Body.Close()
 
+	body, _ := io.ReadAll(resp.Body)
+	logPVSResponse(ctx, "POST", oauthURL, resp.StatusCode, durationMs, body)
+
 	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
 		return "", fmt.Errorf("PVS OAuth respondio %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -438,7 +426,7 @@ func (c *TokenCache) fetchToken(ctx context.Context) (string, error) {
 		AccessToken string `json:"access_token"`
 		ExpiresIn   int    `json:"expires_in"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&resultado); err != nil {
+	if err := json.Unmarshal(body, &resultado); err != nil {
 		return "", fmt.Errorf("parseando respuesta OAuth: %w", err)
 	}
 
@@ -453,6 +441,30 @@ func (c *TokenCache) fetchToken(ctx context.Context) (string, error) {
 	)
 
 	return c.token, nil
+}
+
+// logPVSRequest / logPVSResponse: bodies sanitizados (secrets, QR base64).
+// No loguean headers (Authorization/Bearer quedan fuera a proposito).
+// Body solo si LOG_HTTP_BODIES esta ON (logging.ConfigureHTTPBodyLogging).
+func logPVSRequest(ctx context.Context, method, endpoint string, reqBody []byte) {
+	attrs := []any{"method", method, "endpoint", endpoint}
+	if body, ok := logging.FormatBodyForLog(reqBody); ok {
+		attrs = append(attrs, "body", body)
+	}
+	logging.From(ctx).Info("pvs.http.request", attrs...)
+}
+
+func logPVSResponse(ctx context.Context, method, endpoint string, status int, durationMs int64, respBody []byte) {
+	attrs := []any{
+		"method", method,
+		"endpoint", endpoint,
+		"status_code", status,
+		"duration_ms", durationMs,
+	}
+	if body, ok := logging.FormatBodyForLog(respBody); ok {
+		attrs = append(attrs, "body", body)
+	}
+	logging.From(ctx).Info("pvs.http.response", attrs...)
 }
 
 // Garantia de compilacion: TokenCache implementa ports.TokenCache
