@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sync/singleflight"
 	"golang.org/x/time/rate"
 
+	"github.com/seba/vps-powermix/internal/domain"
 	"github.com/seba/vps-powermix/internal/logging"
 	"github.com/seba/vps-powermix/internal/ports"
 )
@@ -279,9 +280,26 @@ func (c *Cliente) doConRetry(ctx context.Context, req *http.Request) (*http.Resp
 	return resp, nil
 }
 
-// mapearError convierte una respuesta HTTP de error en un error Go
-// con el codigo HTTP preservado (via httpStatusError).
+// mapearError convierte una respuesta HTTP de error en un error Go.
+// 4xx → *domain.PVSBusinessError: error de negocio del cliente, propagable al
+// cliente GS con su mensaje legible (monto invalido, validacion).
+// 5xx → *httpStatusError: error interno, NO propagable (no exponer internals).
 func (c *Cliente) mapearError(statusCode int, body []byte) error {
+	if statusCode >= 400 && statusCode < 500 {
+		var env pvsEnvelope
+		msg := http.StatusText(statusCode)
+		code := ""
+		if err := json.Unmarshal(body, &env); err == nil && env.Message != "" {
+			msg, code = env.Message, env.Code
+		} else if raw := strings.TrimSpace(string(body)); raw != "" {
+			msg = raw
+		}
+		return &domain.PVSBusinessError{
+			StatusCode: statusCode,
+			Code:       code,
+			Message:    msg,
+		}
+	}
 	msg := string(body)
 	if msg == "" {
 		msg = http.StatusText(statusCode)

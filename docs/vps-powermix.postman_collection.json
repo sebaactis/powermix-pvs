@@ -1,1949 +1,2006 @@
 {
-	"info": {
-		"_postman_id": "7fa72605-cb41-477d-9447-1f48fa134d19",
-		"name": "vps-powermix — GS Open API v2 (local)",
-		"description": "## Qué es\nColección local para probar el bridge **vps-powermix** con **Payment Open API v2** (`/order/*`, envelope `{code,msg,data}`) + mock PVS.\n\n## Prerrequisitos\n1. Migraciones 001→008 aplicadas.\n2. `go run cmd/mockpvs/main.go` → `{{mockPvsUrl}}` (default `:8081`).\n3. `go run cmd/server/main.go` → `{{baseUrl}}` (default `:8080`).\n4. En Postman: **Import** este JSON. No hace falta environment aparte: las variables viven en la colección.\n\n## Cómo usarla (importante)\n- Corré **cada carpeta de flujo en orden** (1 → 2 → 3…).\n- El **paso 1 Create** de cada flujo regenera `orderNo`, `thirdOrderNo`, `qrId` y `refundNo`.\n- Los pasos siguientes leen esas variables (`{{thirdOrderNo}}`, `{{qrId}}`, etc.).\n- No mezcles requests de flujos distintos sin rehacer el Create del flujo que estés probando.\n\n## IDs (no confundir)\n| Variable | Origen | Rol |\n| --- | --- | --- |\n| `orderNo` | GS (generado en Create) | Serial de GS → JSON `orderNo` |\n| `thirdOrderNo` | respuesta Create | Nuestro id |\n| `qrId` | mock PVS = `qr-` + thirdOrderNo | Webhook / admin mock |\n| `refundNo` | generado en Create | Refund + refundStatus |\n\n## Variables de colección\nEditables en **Collection → Variables**: `baseUrl`, `mockPvsUrl`, `totalAmount`, `notifyUrl`, `objectId`, `subject`, `attach`.\n\n## Docs\nVer también `docs/GUIA_DE_PRUEBAS.md`.\n\n## Postman tip (variables)\nSi tenés un **Environment** activo con `thirdOrderNo`/`qrId` viejos, Postman prioriza Environment sobre Collection y el webhook falla con *orden no encontrada*.\nEsta colección escribe en **collection + environment** y **reconstruye `qrId = qr-` + thirdOrderNo** en cada paso dependiente.\nRecomendado: correr sin Environment, o con uno vacío.\n\n## Callback PVS (oficial)\nEl webhook de pago simula el **Callback Process** de PVS:\n- URL: `POST /webhook/pvs?qr.reference={{thirdOrderNo}}`\n- Body: `status` APPROVED|REJECTED (+ reference, amount, qrId, txeId, notified_at, payer)\n- Mock PVS (`:8081`) responde envelope `{code,ok,data}` en GenerateQR/Query/Reverse.\n- Reverse local: `status: REVERSED` (no está en el callback oficial de pago; es flujo de refund nuestro).\n",
-		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
-	},
-	"variable": [
-		{
-			"key": "baseUrl",
-			"value": "http://localhost:8080"
-		},
-		{
-			"key": "mockPvsUrl",
-			"value": "http://localhost:8081"
-		},
-		{
-			"key": "totalAmount",
-			"value": "150.00"
-		},
-		{
-			"key": "notifyUrl",
-			"value": "https://gs.example/notify"
-		},
-		{
-			"key": "objectId",
-			"value": "bebida-001"
-		},
-		{
-			"key": "subject",
-			"value": "Batido"
-		},
-		{
-			"key": "attach",
-			"value": "deviceNo=E001&deviceId=maquina-local-1"
-		},
-		{
-			"key": "orderNo",
-			"value": ""
-		},
-		{
-			"key": "thirdOrderNo",
-			"value": ""
-		},
-		{
-			"key": "qrId",
-			"value": ""
-		},
-		{
-			"key": "refundNo",
-			"value": ""
-		},
-		{
-			"key": "nowTs",
-			"value": ""
-		}
-	],
-	"event": [
-		{
-			"listen": "prerequest",
-			"script": {
-				"type": "text/javascript",
-				"exec": [
-					"// Timestamp GS: yyyy-MM-dd HH:mm:ss (UTC local del runner)",
-					"const d = new Date();",
-					"const pad = (n) => String(n).padStart(2, '0');",
-					"const ts = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;",
-					"pm.collectionVariables.set('nowTs', ts);"
-				]
-			}
-		}
-	],
-	"item": [
-		{
-			"name": "00. Setup / Diagnostics",
-			"description": "Correr primero para validar que el bridge está arriba. No mutan estado de órdenes.",
-			"item": [
-				{
-					"name": "0.1 Healthcheck GET /healthz",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-									"console.log('healthz:', pm.response.text());"
-								]
-							}
-						}
-					],
-					"request": {
-						"method": "GET",
-						"header": [],
-						"url": "{{baseUrl}}/healthz",
-						"description": "**Paso 0.1** — Verifica DB + proceso del bridge.\n\nEsperado: HTTP 200 y JSON de salud."
-					},
-					"response": []
-				},
-				{
-					"name": "0.2 Metrics GET /metrics",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-									"pm.test('Prometheus text', () => pm.expect(pm.response.text()).to.include('http_requests_total'));"
-								]
-							}
-						}
-					],
-					"request": {
-						"method": "GET",
-						"header": [],
-						"url": "{{baseUrl}}/metrics",
-						"description": "**Paso 0.2** — Endpoint Prometheus (opcional)."
-					},
-					"response": []
-				}
-			]
-		},
-		{
-			"name": "01. Flujo feliz — create → pay → status → complete",
-			"description": "## Orden de ejecución (OBLIGATORIO)\n1. Create order\n2. Webhook pago PVS (`status APPROVED`)\n3. Query status → `orderStatus` **\"2\"**\n4. Complete success → `DONE` / `returnCode: success`\n\nCada Create regenera IDs de colección.",
-			"item": [
-				{
-					"name": "1. Create order POST /order/qr",
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"const stamp = Date.now();",
-									"const orderNo = `GS-HAPPY-${stamp}`;",
-									"const refundNo = `REF-HAPPY-${stamp}`;",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"setVar('orderNo', orderNo);",
-									"setVar('refundNo', refundNo);",
-									"setVar('thirdOrderNo', '');",
-									"setVar('qrId', '');",
-									"console.log('Nuevo flujo GS-HAPPY:', { orderNo, refundNo });",
-									"console.log('TIP: si hay Environment activo con thirdOrderNo/qrId viejos, este script los sobrescribe.');"
-								]
-							}
-						},
-						{
-							"listen": "test",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-									"const body = pm.response.json();",
-									"pm.test('envelope code 200', () => pm.expect(String(body.code)).to.eql('200'));",
-									"const data = body.data || {};",
-									"pm.test('data.thirdOrderNo', () => pm.expect(data.thirdOrderNo).to.be.a('string').and.not.empty);",
-									"pm.test('data.orderStatus pending \"1\"', () => pm.expect(String(data.orderStatus)).to.eql('1'));",
-									"pm.test('data.qrUrl presente', () => pm.expect(data.qrUrl).to.be.a('string').and.not.empty);",
-									"",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    // Environment gana sobre Collection al resolver {{vars}} — escribir en ambos.",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"if (data.thirdOrderNo) {",
-									"    const third = String(data.thirdOrderNo);",
-									"    const qrId = 'qr-' + third;",
-									"    setVar('thirdOrderNo', third);",
-									"    setVar('qrId', qrId);",
-									"    console.log('IDs capturados del Create (collection+env):', {",
-									"        orderNo: pm.collectionVariables.get('orderNo'),",
-									"        thirdOrderNo: third,",
-									"        qrId: qrId,",
-									"        refundNo: pm.collectionVariables.get('refundNo')",
-									"    });",
-									"}"
-								]
-							}
-						}
-					],
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"objectId\": \"{{objectId}}\",\n  \"subject\": \"{{subject}}\",\n  \"attach\": \"{{attach}}\",\n  \"totalAmount\": \"{{totalAmount}}\",\n  \"notifyUrl\": \"{{notifyUrl}}\"\n}"
-						},
-						"url": "{{baseUrl}}/order/qr",
-						"description": "**Paso 1/4 — Create**\n\nGenera `orderNo` único y guarda en colección:\n- `thirdOrderNo` (respuesta)\n- `qrId` = `qr-` + thirdOrderNo (convención mock PVS)\n\nEsperado envelope:\n```json\n{\"code\":200,\"msg\":\"...\",\"data\":{\"qrUrl\":\"...\",\"orderStatus\":\"1\",\"thirdOrderNo\":\"...\"}}\n```"
-					},
-					"response": []
-				},
-				{
-					"name": "2. Webhook pago PVS POST /webhook/pvs",
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"function getVar(k) {",
-									"    const c = pm.collectionVariables.get(k);",
-									"    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
-									"    if (pm.environment && typeof pm.environment.get === 'function') {",
-									"        const e = pm.environment.get(k);",
-									"        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
-									"    }",
-									"    return '';",
-									"}",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"const third = getVar('thirdOrderNo');",
-									"const orderNo = getVar('orderNo');",
-									"if (!third || !orderNo) {",
-									"    throw new Error(",
-									"        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
-									"        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
-									"        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
-									"    );",
-									"}",
-									"// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
-									"const qrId = 'qr-' + third;",
-									"setVar('thirdOrderNo', third);",
-									"setVar('orderNo', orderNo);",
-									"setVar('qrId', qrId);",
-									"console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
-								]
-							}
-						},
-						{
-							"listen": "test",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-									"console.log('Pago simulado para qrId=', pm.collectionVariables.get('qrId'));",
-									"console.log('Side-effect: PAYMENT_CONFIRMED + notify best-effort a notifyUrl (orderStatus \"2\")');"
-								]
-							}
-						}
-					],
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"reference\": \"{{thirdOrderNo}}\",\n  \"amount\": {{totalAmount}},\n  \"qrId\": \"{{qrId}}\",\n  \"txeId\": \"txe-mock-{{qrId}}\",\n  \"status\": \"APPROVED\",\n  \"notified_at\": \"2024-10-10T18:00:23Z\",\n  \"payer\": {\n    \"name\": \"TEST PAYER\",\n    \"idType\": \"DNI\",\n    \"idNumber\": \"12345678\"\n  }\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "{{baseUrl}}/webhook/pvs?qr.reference={{thirdOrderNo}}",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"webhook",
-								"pvs"
-							],
-							"query": [
-								{
-									"key": "qr.reference",
-									"value": "{{thirdOrderNo}}",
-									"description": "Doc PVS: reference del merchant (nosotros = thirdOrderNo)"
-								}
-							]
-						},
-						"description": "**Simular callback oficial PVS (pago APPROVED)**\n\nDoc PVS Callback Process:\n- `POST {{HOST}}?qr.reference=...`\n- body: `status` APPROVED|REJECTED (+ reference, amount, qrId, txeId, notified_at, payer)\n\nRequiere `{{qrId}}` y `{{thirdOrderNo}}` del Create.\nDispara `PAYMENT_CONFIRMED` + notify best-effort a `notifyUrl` (`orderStatus \"2\"`)."
-					},
-					"response": []
-				},
-				{
-					"name": "3. Query status POST /order/status",
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"function getVar(k) {",
-									"    const c = pm.collectionVariables.get(k);",
-									"    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
-									"    if (pm.environment && typeof pm.environment.get === 'function') {",
-									"        const e = pm.environment.get(k);",
-									"        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
-									"    }",
-									"    return '';",
-									"}",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"const third = getVar('thirdOrderNo');",
-									"const orderNo = getVar('orderNo');",
-									"if (!third || !orderNo) {",
-									"    throw new Error(",
-									"        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
-									"        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
-									"        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
-									"    );",
-									"}",
-									"// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
-									"const qrId = 'qr-' + third;",
-									"setVar('thirdOrderNo', third);",
-									"setVar('orderNo', orderNo);",
-									"setVar('qrId', qrId);",
-									"console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
-								]
-							}
-						},
-						{
-							"listen": "test",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-									"const body = pm.response.json();",
-									"pm.test('envelope code 200', () => pm.expect(String(body.code)).to.eql('200'));",
-									"const data = body.data || {};",
-									"pm.test('orderStatus pagado \"2\"', () => pm.expect(String(data.orderStatus)).to.eql('2'));",
-									"console.log('status data:', data);"
-								]
-							}
-						}
-					],
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\"\n}"
-						},
-						"url": "{{baseUrl}}/order/status",
-						"description": "**Paso 3/4 — Query**\n\nPair match: `orderNo` + `thirdOrderNo`.\nTras el webhook de pago, esperá `orderStatus: \"2\"` (string)."
-					},
-					"response": []
-				},
-				{
-					"name": "4. Complete success POST /order/complete",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-									"const body = pm.response.json();",
-									"pm.test('envelope code 200', () => pm.expect(String(body.code)).to.eql('200'));",
-									"const data = body.data || body;",
-									"pm.test('returnCode success', () => {",
-									"    const rc = data.returnCode || (body.data && body.data.returnCode);",
-									"    pm.expect(String(body).includes('returnCode') || rc).to.be.ok;",
-									"});",
-									"console.log('complete response:', body);",
-									"console.log('Orden debería quedar DONE');"
-								]
-							}
-						},
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"function getVar(k) {",
-									"    const c = pm.collectionVariables.get(k);",
-									"    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
-									"    if (pm.environment && typeof pm.environment.get === 'function') {",
-									"        const e = pm.environment.get(k);",
-									"        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
-									"    }",
-									"    return '';",
-									"}",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"const third = getVar('thirdOrderNo');",
-									"const orderNo = getVar('orderNo');",
-									"if (!third || !orderNo) {",
-									"    throw new Error(",
-									"        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
-									"        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
-									"        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
-									"    );",
-									"}",
-									"// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
-									"const qrId = 'qr-' + third;",
-									"setVar('thirdOrderNo', third);",
-									"setVar('orderNo', orderNo);",
-									"setVar('qrId', qrId);",
-									"console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
-								]
-							}
-						}
-					],
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n  \"success\": true,\n  \"orderStatus\": 2,\n  \"outStockStatus\": 2,\n  \"outStockTime\": \"{{nowTs}}\"\n}"
-						},
-						"url": "{{baseUrl}}/order/complete",
-						"description": "**Paso 4/4 — Complete OK**\n\n`success: true` + `outStockStatus: 2` → entrega OK → orden `DONE`.\n`outStockTime` se rellena con `{{nowTs}}` (prerequest de colección)."
-					},
-					"response": []
-				}
-			]
-		},
-		{
-			"name": "02. Flujo cancel — create → cancel (sin pago)",
-			"description": "## Orden\n1. Create order\n2. Cancel (antes de pagar) → `CANCELLED`\n\nNo uses el Create del flujo feliz: este Create regenera IDs propios.",
-			"item": [
-				{
-					"name": "1. Create order POST /order/qr",
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"const stamp = Date.now();",
-									"const orderNo = `GS-CANCEL-${stamp}`;",
-									"const refundNo = `REF-CANCEL-${stamp}`;",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"setVar('orderNo', orderNo);",
-									"setVar('refundNo', refundNo);",
-									"setVar('thirdOrderNo', '');",
-									"setVar('qrId', '');",
-									"console.log('Nuevo flujo GS-CANCEL:', { orderNo, refundNo });",
-									"console.log('TIP: si hay Environment activo con thirdOrderNo/qrId viejos, este script los sobrescribe.');"
-								]
-							}
-						},
-						{
-							"listen": "test",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-									"const body = pm.response.json();",
-									"pm.test('envelope code 200', () => pm.expect(String(body.code)).to.eql('200'));",
-									"const data = body.data || {};",
-									"pm.test('data.thirdOrderNo', () => pm.expect(data.thirdOrderNo).to.be.a('string').and.not.empty);",
-									"pm.test('data.orderStatus pending \"1\"', () => pm.expect(String(data.orderStatus)).to.eql('1'));",
-									"pm.test('data.qrUrl presente', () => pm.expect(data.qrUrl).to.be.a('string').and.not.empty);",
-									"",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    // Environment gana sobre Collection al resolver {{vars}} — escribir en ambos.",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"if (data.thirdOrderNo) {",
-									"    const third = String(data.thirdOrderNo);",
-									"    const qrId = 'qr-' + third;",
-									"    setVar('thirdOrderNo', third);",
-									"    setVar('qrId', qrId);",
-									"    console.log('IDs capturados del Create (collection+env):', {",
-									"        orderNo: pm.collectionVariables.get('orderNo'),",
-									"        thirdOrderNo: third,",
-									"        qrId: qrId,",
-									"        refundNo: pm.collectionVariables.get('refundNo')",
-									"    });",
-									"}"
-								]
-							}
-						}
-					],
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"objectId\": \"{{objectId}}\",\n  \"subject\": \"{{subject}}\",\n  \"attach\": \"{{attach}}\",\n  \"totalAmount\": \"{{totalAmount}}\",\n  \"notifyUrl\": \"{{notifyUrl}}\"\n}"
-						},
-						"url": "{{baseUrl}}/order/qr",
-						"description": "**Paso 1/2 — Create** para cancel pre-pago."
-					},
-					"response": []
-				},
-				{
-					"name": "2. Cancel POST /order/cancel",
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"function getVar(k) {",
-									"    const c = pm.collectionVariables.get(k);",
-									"    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
-									"    if (pm.environment && typeof pm.environment.get === 'function') {",
-									"        const e = pm.environment.get(k);",
-									"        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
-									"    }",
-									"    return '';",
-									"}",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"const third = getVar('thirdOrderNo');",
-									"const orderNo = getVar('orderNo');",
-									"if (!third || !orderNo) {",
-									"    throw new Error(",
-									"        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
-									"        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
-									"        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
-									"    );",
-									"}",
-									"// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
-									"const qrId = 'qr-' + third;",
-									"setVar('thirdOrderNo', third);",
-									"setVar('orderNo', orderNo);",
-									"setVar('qrId', qrId);",
-									"console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
-								]
-							}
-						},
-						{
-							"listen": "test",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-									"const body = pm.response.json();",
-									"pm.test('envelope code 200', () => pm.expect(String(body.code)).to.eql('200'));",
-									"pm.test('returnCode presente', () => pm.expect(pm.response.text()).to.include('returnCode'));",
-									"console.log('cancel response:', body);"
-								]
-							}
-						}
-					],
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n  \"orderStatus\": 0,\n  \"remark\": \"user cancel\",\n  \"cancelTime\": \"{{nowTs}}\"\n}"
-						},
-						"url": "{{baseUrl}}/order/cancel",
-						"description": "**Paso 2/2 — Cancel** antes de pagar.\n\n`orderStatus: 0` + `cancelTime`.\nEsperado: orden `CANCELLED`, `returnCode: success`."
-					},
-					"response": []
-				}
-			]
-		},
-		{
-			"name": "03. Flujo fail → refund — create → pay → complete fail → refund → reverse → status",
-			"description": "## Orden\n1. Create\n2. Webhook pago (`status APPROVED`)\n3. Complete `success: false` → `FAILED` refundable\n4. Refund → `refundStatus: waiting`\n5. Webhook reverse (`status: REVERSED`)\n6. Refund status → `pending|success|fail`\n\nCreate de este flujo regenera IDs (incluye `refundNo`).",
-			"item": [
-				{
-					"name": "1. Create order POST /order/qr",
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"const stamp = Date.now();",
-									"const orderNo = `GS-REFUND-${stamp}`;",
-									"const refundNo = `REF-${stamp}`;",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"setVar('orderNo', orderNo);",
-									"setVar('refundNo', refundNo);",
-									"setVar('thirdOrderNo', '');",
-									"setVar('qrId', '');",
-									"console.log('Nuevo flujo GS-REFUND:', { orderNo, refundNo });",
-									"console.log('TIP: si hay Environment activo con thirdOrderNo/qrId viejos, este script los sobrescribe.');"
-								]
-							}
-						},
-						{
-							"listen": "test",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-									"const body = pm.response.json();",
-									"pm.test('envelope code 200', () => pm.expect(String(body.code)).to.eql('200'));",
-									"const data = body.data || {};",
-									"pm.test('data.thirdOrderNo', () => pm.expect(data.thirdOrderNo).to.be.a('string').and.not.empty);",
-									"pm.test('data.orderStatus pending \"1\"', () => pm.expect(String(data.orderStatus)).to.eql('1'));",
-									"pm.test('data.qrUrl presente', () => pm.expect(data.qrUrl).to.be.a('string').and.not.empty);",
-									"",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    // Environment gana sobre Collection al resolver {{vars}} — escribir en ambos.",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"if (data.thirdOrderNo) {",
-									"    const third = String(data.thirdOrderNo);",
-									"    const qrId = 'qr-' + third;",
-									"    setVar('thirdOrderNo', third);",
-									"    setVar('qrId', qrId);",
-									"    console.log('IDs capturados del Create (collection+env):', {",
-									"        orderNo: pm.collectionVariables.get('orderNo'),",
-									"        thirdOrderNo: third,",
-									"        qrId: qrId,",
-									"        refundNo: pm.collectionVariables.get('refundNo')",
-									"    });",
-									"}"
-								]
-							}
-						}
-					],
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"objectId\": \"{{objectId}}\",\n  \"subject\": \"{{subject}}\",\n  \"attach\": \"{{attach}}\",\n  \"totalAmount\": \"{{totalAmount}}\",\n  \"notifyUrl\": \"{{notifyUrl}}\"\n}"
-						},
-						"url": "{{baseUrl}}/order/qr",
-						"description": "**Paso 1/6 — Create** para flujo de falla + refund."
-					},
-					"response": []
-				},
-				{
-					"name": "2. Webhook pago PVS POST /webhook/pvs",
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"function getVar(k) {",
-									"    const c = pm.collectionVariables.get(k);",
-									"    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
-									"    if (pm.environment && typeof pm.environment.get === 'function') {",
-									"        const e = pm.environment.get(k);",
-									"        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
-									"    }",
-									"    return '';",
-									"}",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"const third = getVar('thirdOrderNo');",
-									"const orderNo = getVar('orderNo');",
-									"if (!third || !orderNo) {",
-									"    throw new Error(",
-									"        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
-									"        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
-									"        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
-									"    );",
-									"}",
-									"// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
-									"const qrId = 'qr-' + third;",
-									"setVar('thirdOrderNo', third);",
-									"setVar('orderNo', orderNo);",
-									"setVar('qrId', qrId);",
-									"console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
-								]
-							}
-						},
-						{
-							"listen": "test",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"pm.test('HTTP 200', () => pm.response.to.have.status(200));"
-								]
-							}
-						}
-					],
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"reference\": \"{{thirdOrderNo}}\",\n  \"amount\": {{totalAmount}},\n  \"qrId\": \"{{qrId}}\",\n  \"txeId\": \"txe-mock-{{qrId}}\",\n  \"status\": \"APPROVED\",\n  \"notified_at\": \"2024-10-10T18:00:23Z\",\n  \"payer\": {\n    \"name\": \"TEST PAYER\",\n    \"idType\": \"DNI\",\n    \"idNumber\": \"12345678\"\n  }\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "{{baseUrl}}/webhook/pvs?qr.reference={{thirdOrderNo}}",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"webhook",
-								"pvs"
-							],
-							"query": [
-								{
-									"key": "qr.reference",
-									"value": "{{thirdOrderNo}}",
-									"description": "Doc PVS: reference del merchant (nosotros = thirdOrderNo)"
-								}
-							]
-						},
-						"description": "**Simular callback oficial PVS (pago APPROVED)**\n\nDoc PVS Callback Process:\n- `POST {{HOST}}?qr.reference=...`\n- body: `status` APPROVED|REJECTED (+ reference, amount, qrId, txeId, notified_at, payer)\n\nRequiere `{{qrId}}` y `{{thirdOrderNo}}` del Create.\nDispara `PAYMENT_CONFIRMED` + notify best-effort a `notifyUrl` (`orderStatus \"2\"`)."
-					},
-					"response": []
-				},
-				{
-					"name": "3. Complete fail POST /order/complete",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-									"const body = pm.response.json();",
-									"pm.test('envelope code 200', () => pm.expect(String(body.code)).to.eql('200'));",
-									"console.log('complete fail → orden FAILED refundable');",
-									"console.log(body);"
-								]
-							}
-						},
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"function getVar(k) {",
-									"    const c = pm.collectionVariables.get(k);",
-									"    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
-									"    if (pm.environment && typeof pm.environment.get === 'function') {",
-									"        const e = pm.environment.get(k);",
-									"        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
-									"    }",
-									"    return '';",
-									"}",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"const third = getVar('thirdOrderNo');",
-									"const orderNo = getVar('orderNo');",
-									"if (!third || !orderNo) {",
-									"    throw new Error(",
-									"        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
-									"        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
-									"        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
-									"    );",
-									"}",
-									"// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
-									"const qrId = 'qr-' + third;",
-									"setVar('thirdOrderNo', third);",
-									"setVar('orderNo', orderNo);",
-									"setVar('qrId', qrId);",
-									"console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
-								]
-							}
-						}
-					],
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n  \"success\": false,\n  \"orderStatus\": 2,\n  \"outStockStatus\": 1\n}"
-						},
-						"url": "{{baseUrl}}/order/complete",
-						"description": "**Paso 3/6 — Complete fail**\n\n`success: false` + `outStockStatus: 1` → orden `FAILED` (refundable si hubo pago)."
-					},
-					"response": []
-				},
-				{
-					"name": "4. Refund POST /order/refund",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-									"const body = pm.response.json();",
-									"pm.test('envelope code 200', () => pm.expect(String(body.code)).to.eql('200'));",
-									"pm.test('refundStatus waiting (async reverse)', () => {",
-									"    pm.expect(pm.response.text()).to.include('waiting');",
-									"});",
-									"const data = body.data || {};",
-									"if (data.refundNo) {",
-									"    pm.collectionVariables.set('refundNo', data.refundNo);",
-									"}",
-									"console.log('refund data:', data);"
-								]
-							}
-						},
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"function getVar(k) {",
-									"    const c = pm.collectionVariables.get(k);",
-									"    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
-									"    if (pm.environment && typeof pm.environment.get === 'function') {",
-									"        const e = pm.environment.get(k);",
-									"        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
-									"    }",
-									"    return '';",
-									"}",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"const third = getVar('thirdOrderNo');",
-									"const orderNo = getVar('orderNo');",
-									"if (!third || !orderNo) {",
-									"    throw new Error(",
-									"        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
-									"        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
-									"        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
-									"    );",
-									"}",
-									"// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
-									"const qrId = 'qr-' + third;",
-									"setVar('thirdOrderNo', third);",
-									"setVar('orderNo', orderNo);",
-									"setVar('qrId', qrId);",
-									"console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
-								]
-							}
-						}
-					],
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n  \"refundNo\": \"{{refundNo}}\",\n  \"refundAmount\": \"{{totalAmount}}\",\n  \"refundReason\": \"Falla en espiral\"\n}"
-						},
-						"url": "{{baseUrl}}/order/refund",
-						"description": "**Paso 4/6 — Refund**\n\nInicia reverse PVS async. Respuesta inmediata suele ser `refundStatus: \"waiting\"`."
-					},
-					"response": []
-				},
-				{
-					"name": "5. Webhook reverse PVS POST /webhook/pvs",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-									"console.log('Reverse confirmado (stateId 4) para', pm.collectionVariables.get('qrId'));"
-								]
-							}
-						},
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"function getVar(k) {",
-									"    const c = pm.collectionVariables.get(k);",
-									"    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
-									"    if (pm.environment && typeof pm.environment.get === 'function') {",
-									"        const e = pm.environment.get(k);",
-									"        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
-									"    }",
-									"    return '';",
-									"}",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"const third = getVar('thirdOrderNo');",
-									"const orderNo = getVar('orderNo');",
-									"if (!third || !orderNo) {",
-									"    throw new Error(",
-									"        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
-									"        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
-									"        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
-									"    );",
-									"}",
-									"// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
-									"const qrId = 'qr-' + third;",
-									"setVar('thirdOrderNo', third);",
-									"setVar('orderNo', orderNo);",
-									"setVar('qrId', qrId);",
-									"console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
-								]
-							}
-						}
-					],
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"reference\": \"{{thirdOrderNo}}\",\n  \"amount\": {{totalAmount}},\n  \"qrId\": \"{{qrId}}\",\n  \"txeId\": \"txe-rev-{{qrId}}\",\n  \"status\": \"REVERSED\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "{{baseUrl}}/webhook/pvs?qr.reference={{thirdOrderNo}}",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"webhook",
-								"pvs"
-							],
-							"query": [
-								{
-									"key": "qr.reference",
-									"value": "{{thirdOrderNo}}",
-									"description": "Doc PVS: reference del merchant (nosotros = thirdOrderNo)"
-								}
-							]
-						},
-						"description": "**Simular confirmación de reverse (reembolso)**\n\nNota: el callback oficial PVS documenta solo APPROVED|REJECTED.\nPara el flujo de refund local usamos `status: REVERSED` (mapeo interno;\ntambién aceptamos `stateId: 4` por compat). Get QR Status oficial usa `stateId: 4`.\n\nRequiere orden en REFUND_PENDING tras POST /order/refund."
-					},
-					"response": []
-				},
-				{
-					"name": "6. Refund status POST /order/refundStatus",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-									"const body = pm.response.json();",
-									"pm.test('envelope code 200', () => pm.expect(String(body.code)).to.eql('200'));",
-									"const data = body.data || {};",
-									"const st = String(data.refundStatus || '');",
-									"pm.test('refundStatus pending|success|fail', () => {",
-									"    pm.expect(['pending', 'success', 'fail']).to.include(st);",
-									"});",
-									"console.log('refundStatus data:', data);"
-								]
-							}
-						},
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"function getVar(k) {",
-									"    const c = pm.collectionVariables.get(k);",
-									"    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
-									"    if (pm.environment && typeof pm.environment.get === 'function') {",
-									"        const e = pm.environment.get(k);",
-									"        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
-									"    }",
-									"    return '';",
-									"}",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"const third = getVar('thirdOrderNo');",
-									"const orderNo = getVar('orderNo');",
-									"if (!third || !orderNo) {",
-									"    throw new Error(",
-									"        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
-									"        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
-									"        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
-									"    );",
-									"}",
-									"// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
-									"const qrId = 'qr-' + third;",
-									"setVar('thirdOrderNo', third);",
-									"setVar('orderNo', orderNo);",
-									"setVar('qrId', qrId);",
-									"console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });",
-									"const refundNo = getVar('refundNo');",
-									"if (!refundNo) { throw new Error('refundNo vacio'); }",
-									"setVar('refundNo', refundNo);"
-								]
-							}
-						}
-					],
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n  \"refundNo\": \"{{refundNo}}\"\n}"
-						},
-						"url": "{{baseUrl}}/order/refundStatus",
-						"description": "**Paso 6/6 — Query refund**\n\nEsperado en query: `pending` | `success` | `fail` (no `waiting`; waiting es del endpoint refund)."
-					},
-					"response": []
-				}
-			]
-		},
-		{
-			"name": "04. Reconciler — webhook perdido (force mock PVS)",
-			"description": "## Orden\n1. Create (queda QR_SHOWN)\n2. Force status en mock PVS (`status APPROVED`) **sin** pegarle al webhook del bridge\n3. Esperá el scan del reconciler (≥ umbral configurado; en GUIA ~30s para notify, y el scan de QR stuck según config)\n4. Query status — debería reflejar pago si el reconciler levantó el estado\n\nÚtil para validar path de recovery sin webhook.",
-			"item": [
-				{
-					"name": "1. Create order POST /order/qr",
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"const stamp = Date.now();",
-									"const orderNo = `GS-RECON-${stamp}`;",
-									"const refundNo = `REF-RECON-${stamp}`;",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"setVar('orderNo', orderNo);",
-									"setVar('refundNo', refundNo);",
-									"setVar('thirdOrderNo', '');",
-									"setVar('qrId', '');",
-									"console.log('Nuevo flujo GS-RECON:', { orderNo, refundNo });",
-									"console.log('TIP: si hay Environment activo con thirdOrderNo/qrId viejos, este script los sobrescribe.');"
-								]
-							}
-						},
-						{
-							"listen": "test",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-									"const body = pm.response.json();",
-									"pm.test('envelope code 200', () => pm.expect(String(body.code)).to.eql('200'));",
-									"const data = body.data || {};",
-									"pm.test('data.thirdOrderNo', () => pm.expect(data.thirdOrderNo).to.be.a('string').and.not.empty);",
-									"pm.test('data.orderStatus pending \"1\"', () => pm.expect(String(data.orderStatus)).to.eql('1'));",
-									"pm.test('data.qrUrl presente', () => pm.expect(data.qrUrl).to.be.a('string').and.not.empty);",
-									"",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    // Environment gana sobre Collection al resolver {{vars}} — escribir en ambos.",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"if (data.thirdOrderNo) {",
-									"    const third = String(data.thirdOrderNo);",
-									"    const qrId = 'qr-' + third;",
-									"    setVar('thirdOrderNo', third);",
-									"    setVar('qrId', qrId);",
-									"    console.log('IDs capturados del Create (collection+env):', {",
-									"        orderNo: pm.collectionVariables.get('orderNo'),",
-									"        thirdOrderNo: third,",
-									"        qrId: qrId,",
-									"        refundNo: pm.collectionVariables.get('refundNo')",
-									"    });",
-									"}"
-								]
-							}
-						}
-					],
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"objectId\": \"{{objectId}}\",\n  \"subject\": \"{{subject}}\",\n  \"attach\": \"{{attach}}\",\n  \"totalAmount\": \"{{totalAmount}}\",\n  \"notifyUrl\": \"{{notifyUrl}}\"\n}"
-						},
-						"url": "{{baseUrl}}/order/qr",
-						"description": "**Paso 1/3 — Create**. No simules webhook del bridge todavía."
-					},
-					"response": []
-				},
-				{
-					"name": "2. Force status en mock PVS POST /admin/transactions/{qrId}/status",
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"function getVar(k) {",
-									"    const c = pm.collectionVariables.get(k);",
-									"    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
-									"    if (pm.environment && typeof pm.environment.get === 'function') {",
-									"        const e = pm.environment.get(k);",
-									"        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
-									"    }",
-									"    return '';",
-									"}",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"const third = getVar('thirdOrderNo');",
-									"const orderNo = getVar('orderNo');",
-									"if (!third || !orderNo) {",
-									"    throw new Error(",
-									"        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
-									"        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
-									"        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
-									"    );",
-									"}",
-									"// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
-									"const qrId = 'qr-' + third;",
-									"setVar('thirdOrderNo', third);",
-									"setVar('orderNo', orderNo);",
-									"setVar('qrId', qrId);",
-									"console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
-								]
-							}
-						},
-						{
-							"listen": "test",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-									"console.log('Mock PVS forzado a Approved. Esperá el scan del reconciler y después corré Query status.');",
-									"console.log(pm.response.json());"
-								]
-							}
-						}
-					],
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"stateId\": 5\n}"
-						},
-						"url": "{{mockPvsUrl}}/admin/transactions/{{qrId}}/status",
-						"description": "**Paso 2/3 — Force en mock PVS** (puerto 8081).\n\nSimula que el pago ocurrió en PVS pero el webhook al bridge se perdió.\nEl reconciler debería descubrirlo en el próximo scan."
-					},
-					"response": []
-				},
-				{
-					"name": "3. Query status POST /order/status (post-reconciler)",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"pm.test('HTTP 200', () => pm.response.to.have.status(200));",
-									"const data = (pm.response.json().data) || {};",
-									"console.log('orderStatus actual:', data.orderStatus);",
-									"console.log('Si sigue \"1\", el reconciler aún no escaneó — reintentá en unos segundos.');"
-								]
-							}
-						},
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"function getVar(k) {",
-									"    const c = pm.collectionVariables.get(k);",
-									"    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
-									"    if (pm.environment && typeof pm.environment.get === 'function') {",
-									"        const e = pm.environment.get(k);",
-									"        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
-									"    }",
-									"    return '';",
-									"}",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"const third = getVar('thirdOrderNo');",
-									"const orderNo = getVar('orderNo');",
-									"if (!third || !orderNo) {",
-									"    throw new Error(",
-									"        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
-									"        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
-									"        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
-									"    );",
-									"}",
-									"// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
-									"const qrId = 'qr-' + third;",
-									"setVar('thirdOrderNo', third);",
-									"setVar('orderNo', orderNo);",
-									"setVar('qrId', qrId);",
-									"console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
-								]
-							}
-						}
-					],
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\"\n}"
-						},
-						"url": "{{baseUrl}}/order/status",
-						"description": "**Paso 3/3 — Query post-reconciler**\n\nSi el scan ya corrió: `orderStatus \"2\"`.\nSi sigue `\"1\"`, esperá el ticker y re-enviá este request."
-					},
-					"response": []
-				}
-			]
-		},
-		{
-			"name": "05. Endpoints sueltos (referencia)",
-			"description": "Requests individuales reutilizando las variables de colección actuales.\n**No regeneran IDs.** Usalos solo si ya corrió un Create de algún flujo.",
-			"item": [
-				{
-					"name": "POST /order/qr (sin regenerar IDs)",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"objectId\": \"{{objectId}}\",\n  \"subject\": \"{{subject}}\",\n  \"attach\": \"{{attach}}\",\n  \"totalAmount\": \"{{totalAmount}}\",\n  \"notifyUrl\": \"{{notifyUrl}}\"\n}"
-						},
-						"url": "{{baseUrl}}/order/qr",
-						"description": "Idempotente por `orderNo` de GS si la orden ya tiene QR."
-					},
-					"response": []
-				},
-				{
-					"name": "POST /order/status",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\"\n}"
-						},
-						"url": "{{baseUrl}}/order/status",
-						"description": "Pair match orderNo + thirdOrderNo."
-					},
-					"response": [],
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"function getVar(k) {",
-									"    const c = pm.collectionVariables.get(k);",
-									"    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
-									"    if (pm.environment && typeof pm.environment.get === 'function') {",
-									"        const e = pm.environment.get(k);",
-									"        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
-									"    }",
-									"    return '';",
-									"}",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"const third = getVar('thirdOrderNo');",
-									"const orderNo = getVar('orderNo');",
-									"if (!third || !orderNo) {",
-									"    throw new Error(",
-									"        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
-									"        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
-									"        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
-									"    );",
-									"}",
-									"// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
-									"const qrId = 'qr-' + third;",
-									"setVar('thirdOrderNo', third);",
-									"setVar('orderNo', orderNo);",
-									"setVar('qrId', qrId);",
-									"console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
-								]
-							}
-						}
-					]
-				},
-				{
-					"name": "POST /order/complete (success)",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n  \"success\": true,\n  \"orderStatus\": 2,\n  \"outStockStatus\": 2,\n  \"outStockTime\": \"{{nowTs}}\"\n}"
-						},
-						"url": "{{baseUrl}}/order/complete",
-						"description": "Entrega OK."
-					},
-					"response": [],
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"function getVar(k) {",
-									"    const c = pm.collectionVariables.get(k);",
-									"    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
-									"    if (pm.environment && typeof pm.environment.get === 'function') {",
-									"        const e = pm.environment.get(k);",
-									"        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
-									"    }",
-									"    return '';",
-									"}",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"const third = getVar('thirdOrderNo');",
-									"const orderNo = getVar('orderNo');",
-									"if (!third || !orderNo) {",
-									"    throw new Error(",
-									"        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
-									"        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
-									"        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
-									"    );",
-									"}",
-									"// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
-									"const qrId = 'qr-' + third;",
-									"setVar('thirdOrderNo', third);",
-									"setVar('orderNo', orderNo);",
-									"setVar('qrId', qrId);",
-									"console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
-								]
-							}
-						}
-					]
-				},
-				{
-					"name": "POST /order/complete (fail)",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n  \"success\": false,\n  \"orderStatus\": 2,\n  \"outStockStatus\": 1\n}"
-						},
-						"url": "{{baseUrl}}/order/complete",
-						"description": "Falla de dispensado → FAILED refundable."
-					},
-					"response": [],
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"function getVar(k) {",
-									"    const c = pm.collectionVariables.get(k);",
-									"    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
-									"    if (pm.environment && typeof pm.environment.get === 'function') {",
-									"        const e = pm.environment.get(k);",
-									"        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
-									"    }",
-									"    return '';",
-									"}",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"const third = getVar('thirdOrderNo');",
-									"const orderNo = getVar('orderNo');",
-									"if (!third || !orderNo) {",
-									"    throw new Error(",
-									"        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
-									"        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
-									"        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
-									"    );",
-									"}",
-									"// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
-									"const qrId = 'qr-' + third;",
-									"setVar('thirdOrderNo', third);",
-									"setVar('orderNo', orderNo);",
-									"setVar('qrId', qrId);",
-									"console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
-								]
-							}
-						}
-					]
-				},
-				{
-					"name": "POST /order/cancel",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n  \"orderStatus\": 0,\n  \"remark\": \"user cancel\",\n  \"cancelTime\": \"{{nowTs}}\"\n}"
-						},
-						"url": "{{baseUrl}}/order/cancel",
-						"description": "Cancel."
-					},
-					"response": [],
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"function getVar(k) {",
-									"    const c = pm.collectionVariables.get(k);",
-									"    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
-									"    if (pm.environment && typeof pm.environment.get === 'function') {",
-									"        const e = pm.environment.get(k);",
-									"        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
-									"    }",
-									"    return '';",
-									"}",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"const third = getVar('thirdOrderNo');",
-									"const orderNo = getVar('orderNo');",
-									"if (!third || !orderNo) {",
-									"    throw new Error(",
-									"        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
-									"        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
-									"        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
-									"    );",
-									"}",
-									"// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
-									"const qrId = 'qr-' + third;",
-									"setVar('thirdOrderNo', third);",
-									"setVar('orderNo', orderNo);",
-									"setVar('qrId', qrId);",
-									"console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
-								]
-							}
-						}
-					]
-				},
-				{
-					"name": "POST /order/refund",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n  \"refundNo\": \"{{refundNo}}\",\n  \"refundAmount\": \"{{totalAmount}}\",\n  \"refundReason\": \"Falla en espiral\"\n}"
-						},
-						"url": "{{baseUrl}}/order/refund",
-						"description": "Refund async → waiting."
-					},
-					"response": [],
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"function getVar(k) {",
-									"    const c = pm.collectionVariables.get(k);",
-									"    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
-									"    if (pm.environment && typeof pm.environment.get === 'function') {",
-									"        const e = pm.environment.get(k);",
-									"        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
-									"    }",
-									"    return '';",
-									"}",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"const third = getVar('thirdOrderNo');",
-									"const orderNo = getVar('orderNo');",
-									"if (!third || !orderNo) {",
-									"    throw new Error(",
-									"        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
-									"        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
-									"        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
-									"    );",
-									"}",
-									"// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
-									"const qrId = 'qr-' + third;",
-									"setVar('thirdOrderNo', third);",
-									"setVar('orderNo', orderNo);",
-									"setVar('qrId', qrId);",
-									"console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
-								]
-							}
-						}
-					]
-				},
-				{
-					"name": "POST /order/refundStatus",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n  \"refundNo\": \"{{refundNo}}\"\n}"
-						},
-						"url": "{{baseUrl}}/order/refundStatus",
-						"description": "Query refund: pending|success|fail."
-					},
-					"response": [],
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"function getVar(k) {",
-									"    const c = pm.collectionVariables.get(k);",
-									"    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
-									"    if (pm.environment && typeof pm.environment.get === 'function') {",
-									"        const e = pm.environment.get(k);",
-									"        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
-									"    }",
-									"    return '';",
-									"}",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"const third = getVar('thirdOrderNo');",
-									"const orderNo = getVar('orderNo');",
-									"if (!third || !orderNo) {",
-									"    throw new Error(",
-									"        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
-									"        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
-									"        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
-									"    );",
-									"}",
-									"// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
-									"const qrId = 'qr-' + third;",
-									"setVar('thirdOrderNo', third);",
-									"setVar('orderNo', orderNo);",
-									"setVar('qrId', qrId);",
-									"console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
-								]
-							}
-						}
-					]
-				},
-				{
-					"name": "POST /webhook/pvs (pago status APPROVED)",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"reference\": \"{{thirdOrderNo}}\",\n  \"amount\": {{totalAmount}},\n  \"qrId\": \"{{qrId}}\",\n  \"txeId\": \"txe-mock-{{qrId}}\",\n  \"status\": \"APPROVED\",\n  \"notified_at\": \"2024-10-10T18:00:23Z\",\n  \"payer\": {\n    \"name\": \"TEST PAYER\",\n    \"idType\": \"DNI\",\n    \"idNumber\": \"12345678\"\n  }\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "{{baseUrl}}/webhook/pvs?qr.reference={{thirdOrderNo}}",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"webhook",
-								"pvs"
-							],
-							"query": [
-								{
-									"key": "qr.reference",
-									"value": "{{thirdOrderNo}}",
-									"description": "Doc PVS: reference del merchant (nosotros = thirdOrderNo)"
-								}
-							]
-						},
-						"description": "**Simular callback oficial PVS (pago APPROVED)**\n\nDoc PVS Callback Process:\n- `POST {{HOST}}?qr.reference=...`\n- body: `status` APPROVED|REJECTED (+ reference, amount, qrId, txeId, notified_at, payer)\n\nRequiere `{{qrId}}` y `{{thirdOrderNo}}` del Create.\nDispara `PAYMENT_CONFIRMED` + notify best-effort a `notifyUrl` (`orderStatus \"2\"`)."
-					},
-					"response": [],
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"function getVar(k) {",
-									"    const c = pm.collectionVariables.get(k);",
-									"    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
-									"    if (pm.environment && typeof pm.environment.get === 'function') {",
-									"        const e = pm.environment.get(k);",
-									"        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
-									"    }",
-									"    return '';",
-									"}",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"const third = getVar('thirdOrderNo');",
-									"const orderNo = getVar('orderNo');",
-									"if (!third || !orderNo) {",
-									"    throw new Error(",
-									"        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
-									"        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
-									"        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
-									"    );",
-									"}",
-									"// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
-									"const qrId = 'qr-' + third;",
-									"setVar('thirdOrderNo', third);",
-									"setVar('orderNo', orderNo);",
-									"setVar('qrId', qrId);",
-									"console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
-								]
-							}
-						}
-					]
-				},
-				{
-					"name": "POST /webhook/pvs (reverse status REVERSED)",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"reference\": \"{{thirdOrderNo}}\",\n  \"amount\": {{totalAmount}},\n  \"qrId\": \"{{qrId}}\",\n  \"txeId\": \"txe-rev-{{qrId}}\",\n  \"status\": \"REVERSED\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "{{baseUrl}}/webhook/pvs?qr.reference={{thirdOrderNo}}",
-							"host": [
-								"{{baseUrl}}"
-							],
-							"path": [
-								"webhook",
-								"pvs"
-							],
-							"query": [
-								{
-									"key": "qr.reference",
-									"value": "{{thirdOrderNo}}",
-									"description": "Doc PVS: reference del merchant (nosotros = thirdOrderNo)"
-								}
-							]
-						},
-						"description": "**Simular confirmación de reverse (reembolso)**\n\nNota: el callback oficial PVS documenta solo APPROVED|REJECTED.\nPara el flujo de refund local usamos `status: REVERSED` (mapeo interno;\ntambién aceptamos `stateId: 4` por compat). Get QR Status oficial usa `stateId: 4`.\n\nRequiere orden en REFUND_PENDING tras POST /order/refund."
-					},
-					"response": [],
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"function getVar(k) {",
-									"    const c = pm.collectionVariables.get(k);",
-									"    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
-									"    if (pm.environment && typeof pm.environment.get === 'function') {",
-									"        const e = pm.environment.get(k);",
-									"        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
-									"    }",
-									"    return '';",
-									"}",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"const third = getVar('thirdOrderNo');",
-									"const orderNo = getVar('orderNo');",
-									"if (!third || !orderNo) {",
-									"    throw new Error(",
-									"        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
-									"        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
-									"        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
-									"    );",
-									"}",
-									"// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
-									"const qrId = 'qr-' + third;",
-									"setVar('thirdOrderNo', third);",
-									"setVar('orderNo', orderNo);",
-									"setVar('qrId', qrId);",
-									"console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
-								]
-							}
-						}
-					]
-				},
-				{
-					"name": "POST mockPvs admin force status",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"stateId\": 5\n}"
-						},
-						"url": "{{mockPvsUrl}}/admin/transactions/{{qrId}}/status",
-						"description": "Fuerza estado en mock PVS (reconciler)."
-					},
-					"response": [],
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"function getVar(k) {",
-									"    const c = pm.collectionVariables.get(k);",
-									"    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
-									"    if (pm.environment && typeof pm.environment.get === 'function') {",
-									"        const e = pm.environment.get(k);",
-									"        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
-									"    }",
-									"    return '';",
-									"}",
-									"function setVar(k, v) {",
-									"    pm.collectionVariables.set(k, v);",
-									"    if (pm.environment && typeof pm.environment.set === 'function') {",
-									"        try { pm.environment.set(k, v); } catch (e) {}",
-									"    }",
-									"}",
-									"",
-									"const third = getVar('thirdOrderNo');",
-									"const orderNo = getVar('orderNo');",
-									"if (!third || !orderNo) {",
-									"    throw new Error(",
-									"        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
-									"        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
-									"        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
-									"    );",
-									"}",
-									"// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
-									"const qrId = 'qr-' + third;",
-									"setVar('thirdOrderNo', third);",
-									"setVar('orderNo', orderNo);",
-									"setVar('qrId', qrId);",
-									"console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
-								]
-							}
-						}
-					]
-				}
-			]
-		}
-	]
+  "info": {
+    "_postman_id": "7fa72605-cb41-477d-9447-1f48fa134d19",
+    "name": "vps-powermix — GS Open API v2 (local)",
+    "description": "## Qué es\nColección local para probar el bridge **vps-powermix** con **Payment Open API v2** (`/order/*`, envelope `{code,msg,data}`) + mock PVS.\n\n## Prerrequisitos\n1. Migraciones 001→008 aplicadas.\n2. `go run cmd/mockpvs/main.go` → `{{mockPvsUrl}}` (default `:8081`).\n3. `go run cmd/server/main.go` → `{{baseUrl}}` (default `:8080`).\n4. En Postman: **Import** este JSON. No hace falta environment aparte: las variables viven en la colección.\n\n## Cómo usarla (importante)\n- Corré **cada carpeta de flujo en orden** (1 → 2 → 3…).\n- El **paso 1 Create** de cada flujo regenera `orderNo`, `thirdOrderNo`, `qrId` y `refundNo`.\n- Los pasos siguientes leen esas variables (`{{thirdOrderNo}}`, `{{qrId}}`, etc.).\n- No mezcles requests de flujos distintos sin rehacer el Create del flujo que estés probando.\n\n## IDs (no confundir)\n| Variable | Origen | Rol |\n| --- | --- | --- |\n| `orderNo` | GS (generado en Create) | Serial de GS → JSON `orderNo` |\n| `thirdOrderNo` | respuesta Create | Nuestro id |\n| `qrId` | mock PVS = `qr-` + thirdOrderNo | Webhook / admin mock |\n| `refundNo` | generado en Create | Refund + refundStatus |\n\n## Variables de colección\nEditables en **Collection → Variables**: `baseUrl`, `mockPvsUrl`, `totalAmount`, `notifyUrl`, `objectId`, `subject`, `attach`.\n\n## Docs\nVer también `docs/GUIA_DE_PRUEBAS.md`.\n\n## Postman tip (variables)\nSi tenés un **Environment** activo con `thirdOrderNo`/`qrId` viejos, Postman prioriza Environment sobre Collection y el webhook falla con *orden no encontrada*.\nEsta colección escribe en **collection + environment** y **reconstruye `qrId = qr-` + thirdOrderNo** en cada paso dependiente.\nRecomendado: correr sin Environment, o con uno vacío.\n\n## Callback PVS (oficial)\nEl webhook de pago simula el **Callback Process** de PVS:\n- URL: `POST /webhook/pvs?qr.reference={{thirdOrderNo}}`\n- Body: `status` APPROVED|REJECTED (+ reference, amount, qrId, txeId, notified_at, payer)\n- Mock PVS (`:8081`) responde envelope `{code,ok,data}` en GenerateQR/Query/Reverse.\n- Reverse local: `status: REVERSED` (no está en el callback oficial de pago; es flujo de refund nuestro).\n",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "mockPvsUrl",
+      "value": "http://localhost:8081"
+    },
+    {
+      "key": "totalAmount",
+      "value": "150.00"
+    },
+    {
+      "key": "notifyUrl",
+      "value": "http://mockgs:8082/notify"
+    },
+    {
+      "key": "objectId",
+      "value": "bebida-001"
+    },
+    {
+      "key": "subject",
+      "value": "Batido"
+    },
+    {
+      "key": "attach",
+      "value": "deviceNo=E001&deviceId=maquina-local-1"
+    },
+    {
+      "key": "orderNo",
+      "value": ""
+    },
+    {
+      "key": "thirdOrderNo",
+      "value": ""
+    },
+    {
+      "key": "qrId",
+      "value": ""
+    },
+    {
+      "key": "refundNo",
+      "value": ""
+    },
+    {
+      "key": "nowTs",
+      "value": ""
+    },
+    {
+      "key": "totalAmountSmall",
+      "value": "1.00"
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Timestamp GS: yyyy-MM-dd HH:mm:ss (UTC local del runner)",
+          "const d = new Date();",
+          "const pad = (n) => String(n).padStart(2, '0');",
+          "const ts = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;",
+          "pm.collectionVariables.set('nowTs', ts);"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "00. Setup / Diagnostics",
+      "description": "Correr primero para validar que el bridge está arriba. No mutan estado de órdenes.",
+      "item": [
+        {
+          "name": "0.1 Healthcheck GET /healthz",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "console.log('healthz:', pm.response.text());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/healthz",
+            "description": "**Paso 0.1** — Verifica DB + proceso del bridge.\n\nEsperado: HTTP 200 y JSON de salud."
+          },
+          "response": []
+        },
+        {
+          "name": "0.2 Metrics GET /metrics",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Prometheus text', () => pm.expect(pm.response.text()).to.include('http_requests_total'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/metrics",
+            "description": "**Paso 0.2** — Endpoint Prometheus (opcional)."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "01. Flujo feliz — create → pay → status → complete",
+      "description": "## Orden de ejecución (OBLIGATORIO)\n1. Create order\n2. Webhook pago PVS (`status APPROVED`)\n3. Query status → `orderStatus` **\"2\"**\n4. Complete success → `DONE` / `returnCode: success`\n\nCada Create regenera IDs de colección.",
+      "item": [
+        {
+          "name": "1. Create order POST /order/qr",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const stamp = Date.now();",
+                  "const orderNo = `GS-HAPPY-${stamp}`;",
+                  "const refundNo = `REF-HAPPY-${stamp}`;",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('refundNo', refundNo);",
+                  "setVar('thirdOrderNo', '');",
+                  "setVar('qrId', '');",
+                  "console.log('Nuevo flujo GS-HAPPY:', { orderNo, refundNo });",
+                  "console.log('TIP: si hay Environment activo con thirdOrderNo/qrId viejos, este script los sobrescribe.');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope code 200', () => pm.expect(String(body.code)).to.eql('200'));",
+                  "const data = body.data || {};",
+                  "pm.test('data.thirdOrderNo', () => pm.expect(data.thirdOrderNo).to.be.a('string').and.not.empty);",
+                  "pm.test('data.orderStatus pending \"1\"', () => pm.expect(String(data.orderStatus)).to.eql('1'));",
+                  "pm.test('data.qrUrl presente', () => pm.expect(data.qrUrl).to.be.a('string').and.not.empty);",
+                  "",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    // Environment gana sobre Collection al resolver {{vars}} — escribir en ambos.",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "if (data.thirdOrderNo) {",
+                  "    const third = String(data.thirdOrderNo);",
+                  "    const qrId = 'qr-' + third;",
+                  "    setVar('thirdOrderNo', third);",
+                  "    setVar('qrId', qrId);",
+                  "    console.log('IDs capturados del Create (collection+env):', {",
+                  "        orderNo: pm.collectionVariables.get('orderNo'),",
+                  "        thirdOrderNo: third,",
+                  "        qrId: qrId,",
+                  "        refundNo: pm.collectionVariables.get('refundNo')",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"objectId\": \"{{objectId}}\",\n  \"subject\": \"{{subject}}\",\n  \"attach\": \"{{attach}}\",\n  \"totalAmount\": \"{{totalAmount}}\",\n  \"notifyUrl\": \"{{notifyUrl}}\"\n}"
+            },
+            "url": "{{baseUrl}}/order/qr",
+            "description": "**Paso 1/4 — Create**\n\nGenera `orderNo` único y guarda en colección:\n- `thirdOrderNo` (respuesta)\n- `qrId` = `qr-` + thirdOrderNo (convención mock PVS)\n\nEsperado envelope:\n```json\n{\"code\":200,\"msg\":\"...\",\"data\":{\"qrUrl\":\"...\",\"orderStatus\":\"1\",\"thirdOrderNo\":\"...\"}}\n```"
+          },
+          "response": []
+        },
+        {
+          "name": "2. Webhook pago PVS POST /webhook/pvs",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function getVar(k) {",
+                  "    const c = pm.collectionVariables.get(k);",
+                  "    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
+                  "    if (pm.environment && typeof pm.environment.get === 'function') {",
+                  "        const e = pm.environment.get(k);",
+                  "        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
+                  "    }",
+                  "    return '';",
+                  "}",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "const third = getVar('thirdOrderNo');",
+                  "const orderNo = getVar('orderNo');",
+                  "if (!third || !orderNo) {",
+                  "    throw new Error(",
+                  "        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
+                  "        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
+                  "        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
+                  "    );",
+                  "}",
+                  "// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
+                  "const qrId = 'qr-' + third;",
+                  "setVar('thirdOrderNo', third);",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('qrId', qrId);",
+                  "console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "console.log('Pago simulado para qrId=', pm.collectionVariables.get('qrId'));",
+                  "console.log('Side-effect: PAYMENT_CONFIRMED + notify best-effort a notifyUrl (orderStatus \"2\")');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"{{thirdOrderNo}}\",\n  \"amount\": {{totalAmount}},\n  \"qrId\": \"{{qrId}}\",\n  \"txeId\": \"txe-mock-{{qrId}}\",\n  \"status\": \"APPROVED\",\n  \"notified_at\": \"2024-10-10T18:00:23Z\",\n  \"payer\": {\n    \"name\": \"TEST PAYER\",\n    \"idType\": \"DNI\",\n    \"idNumber\": \"12345678\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/webhook/pvs?qr.reference={{thirdOrderNo}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhook",
+                "pvs"
+              ],
+              "query": [
+                {
+                  "key": "qr.reference",
+                  "value": "{{thirdOrderNo}}",
+                  "description": "Doc PVS: reference del merchant (nosotros = thirdOrderNo)"
+                }
+              ]
+            },
+            "description": "**Simular callback oficial PVS (pago APPROVED)**\n\nDoc PVS Callback Process:\n- `POST {{HOST}}?qr.reference=...`\n- body: `status` APPROVED|REJECTED (+ reference, amount, qrId, txeId, notified_at, payer)\n\nRequiere `{{qrId}}` y `{{thirdOrderNo}}` del Create.\nDispara `PAYMENT_CONFIRMED` + notify best-effort a `notifyUrl` (`orderStatus \"2\"`)."
+          },
+          "response": []
+        },
+        {
+          "name": "3. Query status POST /order/status",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function getVar(k) {",
+                  "    const c = pm.collectionVariables.get(k);",
+                  "    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
+                  "    if (pm.environment && typeof pm.environment.get === 'function') {",
+                  "        const e = pm.environment.get(k);",
+                  "        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
+                  "    }",
+                  "    return '';",
+                  "}",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "const third = getVar('thirdOrderNo');",
+                  "const orderNo = getVar('orderNo');",
+                  "if (!third || !orderNo) {",
+                  "    throw new Error(",
+                  "        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
+                  "        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
+                  "        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
+                  "    );",
+                  "}",
+                  "// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
+                  "const qrId = 'qr-' + third;",
+                  "setVar('thirdOrderNo', third);",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('qrId', qrId);",
+                  "console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope code 200', () => pm.expect(String(body.code)).to.eql('200'));",
+                  "const data = body.data || {};",
+                  "pm.test('orderStatus pagado \"2\"', () => pm.expect(String(data.orderStatus)).to.eql('2'));",
+                  "console.log('status data:', data);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\"\n}"
+            },
+            "url": "{{baseUrl}}/order/status",
+            "description": "**Paso 3/4 — Query**\n\nPair match: `orderNo` + `thirdOrderNo`.\nTras el webhook de pago, esperá `orderStatus: \"2\"` (string)."
+          },
+          "response": []
+        },
+        {
+          "name": "4. Complete success POST /order/complete",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope code 200', () => pm.expect(String(body.code)).to.eql('200'));",
+                  "const data = body.data || body;",
+                  "pm.test('returnCode success', () => {",
+                  "    const rc = data.returnCode || (body.data && body.data.returnCode);",
+                  "    pm.expect(String(body).includes('returnCode') || rc).to.be.ok;",
+                  "});",
+                  "console.log('complete response:', body);",
+                  "console.log('Orden debería quedar DONE');"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function getVar(k) {",
+                  "    const c = pm.collectionVariables.get(k);",
+                  "    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
+                  "    if (pm.environment && typeof pm.environment.get === 'function') {",
+                  "        const e = pm.environment.get(k);",
+                  "        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
+                  "    }",
+                  "    return '';",
+                  "}",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "const third = getVar('thirdOrderNo');",
+                  "const orderNo = getVar('orderNo');",
+                  "if (!third || !orderNo) {",
+                  "    throw new Error(",
+                  "        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
+                  "        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
+                  "        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
+                  "    );",
+                  "}",
+                  "// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
+                  "const qrId = 'qr-' + third;",
+                  "setVar('thirdOrderNo', third);",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('qrId', qrId);",
+                  "console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n  \"success\": true,\n  \"orderStatus\": 2,\n  \"outStockStatus\": 2,\n  \"outStockTime\": \"{{nowTs}}\"\n}"
+            },
+            "url": "{{baseUrl}}/order/complete",
+            "description": "**Paso 4/4 — Complete OK**\n\n`success: true` + `outStockStatus: 2` → entrega OK → orden `DONE`.\n`outStockTime` se rellena con `{{nowTs}}` (prerequest de colección)."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "02. Flujo cancel — create → cancel (sin pago)",
+      "description": "## Orden\n1. Create order\n2. Cancel (antes de pagar) → `CANCELLED`\n\nNo uses el Create del flujo feliz: este Create regenera IDs propios.",
+      "item": [
+        {
+          "name": "1. Create order POST /order/qr",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const stamp = Date.now();",
+                  "const orderNo = `GS-CANCEL-${stamp}`;",
+                  "const refundNo = `REF-CANCEL-${stamp}`;",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('refundNo', refundNo);",
+                  "setVar('thirdOrderNo', '');",
+                  "setVar('qrId', '');",
+                  "console.log('Nuevo flujo GS-CANCEL:', { orderNo, refundNo });",
+                  "console.log('TIP: si hay Environment activo con thirdOrderNo/qrId viejos, este script los sobrescribe.');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope code 200', () => pm.expect(String(body.code)).to.eql('200'));",
+                  "const data = body.data || {};",
+                  "pm.test('data.thirdOrderNo', () => pm.expect(data.thirdOrderNo).to.be.a('string').and.not.empty);",
+                  "pm.test('data.orderStatus pending \"1\"', () => pm.expect(String(data.orderStatus)).to.eql('1'));",
+                  "pm.test('data.qrUrl presente', () => pm.expect(data.qrUrl).to.be.a('string').and.not.empty);",
+                  "",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    // Environment gana sobre Collection al resolver {{vars}} — escribir en ambos.",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "if (data.thirdOrderNo) {",
+                  "    const third = String(data.thirdOrderNo);",
+                  "    const qrId = 'qr-' + third;",
+                  "    setVar('thirdOrderNo', third);",
+                  "    setVar('qrId', qrId);",
+                  "    console.log('IDs capturados del Create (collection+env):', {",
+                  "        orderNo: pm.collectionVariables.get('orderNo'),",
+                  "        thirdOrderNo: third,",
+                  "        qrId: qrId,",
+                  "        refundNo: pm.collectionVariables.get('refundNo')",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"objectId\": \"{{objectId}}\",\n  \"subject\": \"{{subject}}\",\n  \"attach\": \"{{attach}}\",\n  \"totalAmount\": \"{{totalAmount}}\",\n  \"notifyUrl\": \"{{notifyUrl}}\"\n}"
+            },
+            "url": "{{baseUrl}}/order/qr",
+            "description": "**Paso 1/2 — Create** para cancel pre-pago."
+          },
+          "response": []
+        },
+        {
+          "name": "2. Cancel POST /order/cancel",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function getVar(k) {",
+                  "    const c = pm.collectionVariables.get(k);",
+                  "    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
+                  "    if (pm.environment && typeof pm.environment.get === 'function') {",
+                  "        const e = pm.environment.get(k);",
+                  "        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
+                  "    }",
+                  "    return '';",
+                  "}",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "const third = getVar('thirdOrderNo');",
+                  "const orderNo = getVar('orderNo');",
+                  "if (!third || !orderNo) {",
+                  "    throw new Error(",
+                  "        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
+                  "        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
+                  "        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
+                  "    );",
+                  "}",
+                  "// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
+                  "const qrId = 'qr-' + third;",
+                  "setVar('thirdOrderNo', third);",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('qrId', qrId);",
+                  "console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope code 200', () => pm.expect(String(body.code)).to.eql('200'));",
+                  "pm.test('returnCode presente', () => pm.expect(pm.response.text()).to.include('returnCode'));",
+                  "console.log('cancel response:', body);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n  \"orderStatus\": 0,\n  \"remark\": \"user cancel\",\n  \"cancelTime\": \"{{nowTs}}\"\n}"
+            },
+            "url": "{{baseUrl}}/order/cancel",
+            "description": "**Paso 2/2 — Cancel** antes de pagar.\n\n`orderStatus: 0` + `cancelTime`.\nEsperado: orden `CANCELLED`, `returnCode: success`."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "03. Flujo fail → refund — create → pay → complete fail → refund → reverse → status",
+      "description": "## Orden\n1. Create\n2. Webhook pago (`status APPROVED`)\n3. Complete `success: false` → `FAILED` refundable\n4. Refund → `refundStatus: waiting`\n5. Webhook reverse (`status: REVERSED`)\n6. Refund status → `pending|success|fail`\n\nCreate de este flujo regenera IDs (incluye `refundNo`).",
+      "item": [
+        {
+          "name": "1. Create order POST /order/qr",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const stamp = Date.now();",
+                  "const orderNo = `GS-REFUND-${stamp}`;",
+                  "const refundNo = `REF-${stamp}`;",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('refundNo', refundNo);",
+                  "setVar('thirdOrderNo', '');",
+                  "setVar('qrId', '');",
+                  "console.log('Nuevo flujo GS-REFUND:', { orderNo, refundNo });",
+                  "console.log('TIP: si hay Environment activo con thirdOrderNo/qrId viejos, este script los sobrescribe.');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope code 200', () => pm.expect(String(body.code)).to.eql('200'));",
+                  "const data = body.data || {};",
+                  "pm.test('data.thirdOrderNo', () => pm.expect(data.thirdOrderNo).to.be.a('string').and.not.empty);",
+                  "pm.test('data.orderStatus pending \"1\"', () => pm.expect(String(data.orderStatus)).to.eql('1'));",
+                  "pm.test('data.qrUrl presente', () => pm.expect(data.qrUrl).to.be.a('string').and.not.empty);",
+                  "",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    // Environment gana sobre Collection al resolver {{vars}} — escribir en ambos.",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "if (data.thirdOrderNo) {",
+                  "    const third = String(data.thirdOrderNo);",
+                  "    const qrId = 'qr-' + third;",
+                  "    setVar('thirdOrderNo', third);",
+                  "    setVar('qrId', qrId);",
+                  "    console.log('IDs capturados del Create (collection+env):', {",
+                  "        orderNo: pm.collectionVariables.get('orderNo'),",
+                  "        thirdOrderNo: third,",
+                  "        qrId: qrId,",
+                  "        refundNo: pm.collectionVariables.get('refundNo')",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"objectId\": \"{{objectId}}\",\n  \"subject\": \"{{subject}}\",\n  \"attach\": \"{{attach}}\",\n  \"totalAmount\": \"{{totalAmount}}\",\n  \"notifyUrl\": \"{{notifyUrl}}\"\n}"
+            },
+            "url": "{{baseUrl}}/order/qr",
+            "description": "**Paso 1/6 — Create** para flujo de falla + refund."
+          },
+          "response": []
+        },
+        {
+          "name": "2. Webhook pago PVS POST /webhook/pvs",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function getVar(k) {",
+                  "    const c = pm.collectionVariables.get(k);",
+                  "    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
+                  "    if (pm.environment && typeof pm.environment.get === 'function') {",
+                  "        const e = pm.environment.get(k);",
+                  "        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
+                  "    }",
+                  "    return '';",
+                  "}",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "const third = getVar('thirdOrderNo');",
+                  "const orderNo = getVar('orderNo');",
+                  "if (!third || !orderNo) {",
+                  "    throw new Error(",
+                  "        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
+                  "        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
+                  "        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
+                  "    );",
+                  "}",
+                  "// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
+                  "const qrId = 'qr-' + third;",
+                  "setVar('thirdOrderNo', third);",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('qrId', qrId);",
+                  "console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"{{thirdOrderNo}}\",\n  \"amount\": {{totalAmount}},\n  \"qrId\": \"{{qrId}}\",\n  \"txeId\": \"txe-mock-{{qrId}}\",\n  \"status\": \"APPROVED\",\n  \"notified_at\": \"2024-10-10T18:00:23Z\",\n  \"payer\": {\n    \"name\": \"TEST PAYER\",\n    \"idType\": \"DNI\",\n    \"idNumber\": \"12345678\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/webhook/pvs?qr.reference={{thirdOrderNo}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhook",
+                "pvs"
+              ],
+              "query": [
+                {
+                  "key": "qr.reference",
+                  "value": "{{thirdOrderNo}}",
+                  "description": "Doc PVS: reference del merchant (nosotros = thirdOrderNo)"
+                }
+              ]
+            },
+            "description": "**Simular callback oficial PVS (pago APPROVED)**\n\nDoc PVS Callback Process:\n- `POST {{HOST}}?qr.reference=...`\n- body: `status` APPROVED|REJECTED (+ reference, amount, qrId, txeId, notified_at, payer)\n\nRequiere `{{qrId}}` y `{{thirdOrderNo}}` del Create.\nDispara `PAYMENT_CONFIRMED` + notify best-effort a `notifyUrl` (`orderStatus \"2\"`)."
+          },
+          "response": []
+        },
+        {
+          "name": "3. Complete fail POST /order/complete",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope code 200', () => pm.expect(String(body.code)).to.eql('200'));",
+                  "console.log('complete fail → orden FAILED refundable');",
+                  "console.log(body);"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function getVar(k) {",
+                  "    const c = pm.collectionVariables.get(k);",
+                  "    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
+                  "    if (pm.environment && typeof pm.environment.get === 'function') {",
+                  "        const e = pm.environment.get(k);",
+                  "        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
+                  "    }",
+                  "    return '';",
+                  "}",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "const third = getVar('thirdOrderNo');",
+                  "const orderNo = getVar('orderNo');",
+                  "if (!third || !orderNo) {",
+                  "    throw new Error(",
+                  "        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
+                  "        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
+                  "        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
+                  "    );",
+                  "}",
+                  "// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
+                  "const qrId = 'qr-' + third;",
+                  "setVar('thirdOrderNo', third);",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('qrId', qrId);",
+                  "console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n  \"success\": false,\n  \"orderStatus\": 2,\n  \"outStockStatus\": 1\n}"
+            },
+            "url": "{{baseUrl}}/order/complete",
+            "description": "**Paso 3/6 — Complete fail**\n\n`success: false` + `outStockStatus: 1` → orden `FAILED` (refundable si hubo pago)."
+          },
+          "response": []
+        },
+        {
+          "name": "4. Refund POST /order/refund",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope code 200', () => pm.expect(String(body.code)).to.eql('200'));",
+                  "pm.test('refundStatus waiting (async reverse)', () => {",
+                  "    pm.expect(pm.response.text()).to.include('waiting');",
+                  "});",
+                  "const data = body.data || {};",
+                  "if (data.refundNo) {",
+                  "    pm.collectionVariables.set('refundNo', data.refundNo);",
+                  "}",
+                  "console.log('refund data:', data);"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function getVar(k) {",
+                  "    const c = pm.collectionVariables.get(k);",
+                  "    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
+                  "    if (pm.environment && typeof pm.environment.get === 'function') {",
+                  "        const e = pm.environment.get(k);",
+                  "        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
+                  "    }",
+                  "    return '';",
+                  "}",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "const third = getVar('thirdOrderNo');",
+                  "const orderNo = getVar('orderNo');",
+                  "if (!third || !orderNo) {",
+                  "    throw new Error(",
+                  "        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
+                  "        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
+                  "        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
+                  "    );",
+                  "}",
+                  "// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
+                  "const qrId = 'qr-' + third;",
+                  "setVar('thirdOrderNo', third);",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('qrId', qrId);",
+                  "console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n  \"refundNo\": \"{{refundNo}}\",\n  \"refundAmount\": \"{{totalAmount}}\",\n  \"refundReason\": \"Falla en espiral\"\n}"
+            },
+            "url": "{{baseUrl}}/order/refund",
+            "description": "**Paso 4/6 — Refund**\n\nInicia reverse PVS async. Respuesta inmediata suele ser `refundStatus: \"waiting\"`."
+          },
+          "response": []
+        },
+        {
+          "name": "5. Webhook reverse PVS POST /webhook/pvs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "console.log('Reverse confirmado (stateId 4) para', pm.collectionVariables.get('qrId'));"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function getVar(k) {",
+                  "    const c = pm.collectionVariables.get(k);",
+                  "    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
+                  "    if (pm.environment && typeof pm.environment.get === 'function') {",
+                  "        const e = pm.environment.get(k);",
+                  "        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
+                  "    }",
+                  "    return '';",
+                  "}",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "const third = getVar('thirdOrderNo');",
+                  "const orderNo = getVar('orderNo');",
+                  "if (!third || !orderNo) {",
+                  "    throw new Error(",
+                  "        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
+                  "        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
+                  "        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
+                  "    );",
+                  "}",
+                  "// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
+                  "const qrId = 'qr-' + third;",
+                  "setVar('thirdOrderNo', third);",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('qrId', qrId);",
+                  "console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"{{thirdOrderNo}}\",\n  \"amount\": {{totalAmount}},\n  \"qrId\": \"{{qrId}}\",\n  \"txeId\": \"txe-rev-{{qrId}}\",\n  \"status\": \"REVERSED\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/webhook/pvs?qr.reference={{thirdOrderNo}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhook",
+                "pvs"
+              ],
+              "query": [
+                {
+                  "key": "qr.reference",
+                  "value": "{{thirdOrderNo}}",
+                  "description": "Doc PVS: reference del merchant (nosotros = thirdOrderNo)"
+                }
+              ]
+            },
+            "description": "**Simular confirmación de reverse (reembolso)**\n\nNota: el callback oficial PVS documenta solo APPROVED|REJECTED.\nPara el flujo de refund local usamos `status: REVERSED` (mapeo interno;\ntambién aceptamos `stateId: 4` por compat). Get QR Status oficial usa `stateId: 4`.\n\nRequiere orden en REFUND_PENDING tras POST /order/refund."
+          },
+          "response": []
+        },
+        {
+          "name": "6. Refund status POST /order/refundStatus",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope code 200', () => pm.expect(String(body.code)).to.eql('200'));",
+                  "const data = body.data || {};",
+                  "const st = String(data.refundStatus || '');",
+                  "pm.test('refundStatus pending|success|fail', () => {",
+                  "    pm.expect(['pending', 'success', 'fail']).to.include(st);",
+                  "});",
+                  "console.log('refundStatus data:', data);"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function getVar(k) {",
+                  "    const c = pm.collectionVariables.get(k);",
+                  "    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
+                  "    if (pm.environment && typeof pm.environment.get === 'function') {",
+                  "        const e = pm.environment.get(k);",
+                  "        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
+                  "    }",
+                  "    return '';",
+                  "}",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "const third = getVar('thirdOrderNo');",
+                  "const orderNo = getVar('orderNo');",
+                  "if (!third || !orderNo) {",
+                  "    throw new Error(",
+                  "        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
+                  "        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
+                  "        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
+                  "    );",
+                  "}",
+                  "// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
+                  "const qrId = 'qr-' + third;",
+                  "setVar('thirdOrderNo', third);",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('qrId', qrId);",
+                  "console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });",
+                  "const refundNo = getVar('refundNo');",
+                  "if (!refundNo) { throw new Error('refundNo vacio'); }",
+                  "setVar('refundNo', refundNo);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n  \"refundNo\": \"{{refundNo}}\"\n}"
+            },
+            "url": "{{baseUrl}}/order/refundStatus",
+            "description": "**Paso 6/6 — Query refund**\n\nEsperado en query: `pending` | `success` | `fail` (no `waiting`; waiting es del endpoint refund)."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "04. Reconciler — webhook perdido (force mock PVS)",
+      "description": "## Orden\n1. Create (queda QR_SHOWN)\n2. Force status en mock PVS (`status APPROVED`) **sin** pegarle al webhook del bridge\n3. Esperá el scan del reconciler (≥ umbral configurado; en GUIA ~30s para notify, y el scan de QR stuck según config)\n4. Query status — debería reflejar pago si el reconciler levantó el estado\n\nÚtil para validar path de recovery sin webhook.",
+      "item": [
+        {
+          "name": "1. Create order POST /order/qr",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const stamp = Date.now();",
+                  "const orderNo = `GS-RECON-${stamp}`;",
+                  "const refundNo = `REF-RECON-${stamp}`;",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('refundNo', refundNo);",
+                  "setVar('thirdOrderNo', '');",
+                  "setVar('qrId', '');",
+                  "console.log('Nuevo flujo GS-RECON:', { orderNo, refundNo });",
+                  "console.log('TIP: si hay Environment activo con thirdOrderNo/qrId viejos, este script los sobrescribe.');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope code 200', () => pm.expect(String(body.code)).to.eql('200'));",
+                  "const data = body.data || {};",
+                  "pm.test('data.thirdOrderNo', () => pm.expect(data.thirdOrderNo).to.be.a('string').and.not.empty);",
+                  "pm.test('data.orderStatus pending \"1\"', () => pm.expect(String(data.orderStatus)).to.eql('1'));",
+                  "pm.test('data.qrUrl presente', () => pm.expect(data.qrUrl).to.be.a('string').and.not.empty);",
+                  "",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    // Environment gana sobre Collection al resolver {{vars}} — escribir en ambos.",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "if (data.thirdOrderNo) {",
+                  "    const third = String(data.thirdOrderNo);",
+                  "    const qrId = 'qr-' + third;",
+                  "    setVar('thirdOrderNo', third);",
+                  "    setVar('qrId', qrId);",
+                  "    console.log('IDs capturados del Create (collection+env):', {",
+                  "        orderNo: pm.collectionVariables.get('orderNo'),",
+                  "        thirdOrderNo: third,",
+                  "        qrId: qrId,",
+                  "        refundNo: pm.collectionVariables.get('refundNo')",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"objectId\": \"{{objectId}}\",\n  \"subject\": \"{{subject}}\",\n  \"attach\": \"{{attach}}\",\n  \"totalAmount\": \"{{totalAmount}}\",\n  \"notifyUrl\": \"{{notifyUrl}}\"\n}"
+            },
+            "url": "{{baseUrl}}/order/qr",
+            "description": "**Paso 1/3 — Create**. No simules webhook del bridge todavía."
+          },
+          "response": []
+        },
+        {
+          "name": "2. Force status en mock PVS POST /admin/transactions/{qrId}/status",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function getVar(k) {",
+                  "    const c = pm.collectionVariables.get(k);",
+                  "    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
+                  "    if (pm.environment && typeof pm.environment.get === 'function') {",
+                  "        const e = pm.environment.get(k);",
+                  "        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
+                  "    }",
+                  "    return '';",
+                  "}",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "const third = getVar('thirdOrderNo');",
+                  "const orderNo = getVar('orderNo');",
+                  "if (!third || !orderNo) {",
+                  "    throw new Error(",
+                  "        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
+                  "        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
+                  "        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
+                  "    );",
+                  "}",
+                  "// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
+                  "const qrId = 'qr-' + third;",
+                  "setVar('thirdOrderNo', third);",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('qrId', qrId);",
+                  "console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "console.log('Mock PVS forzado a Approved. Esperá el scan del reconciler y después corré Query status.');",
+                  "console.log(pm.response.json());"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"stateId\": 5\n}"
+            },
+            "url": "{{mockPvsUrl}}/admin/transactions/{{qrId}}/status",
+            "description": "**Paso 2/3 — Force en mock PVS** (puerto 8081).\n\nSimula que el pago ocurrió en PVS pero el webhook al bridge se perdió.\nEl reconciler debería descubrirlo en el próximo scan."
+          },
+          "response": []
+        },
+        {
+          "name": "3. Query status POST /order/status (post-reconciler)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "const data = (pm.response.json().data) || {};",
+                  "console.log('orderStatus actual:', data.orderStatus);",
+                  "console.log('Si sigue \"1\", el reconciler aún no escaneó — reintentá en unos segundos.');"
+                ]
+              }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function getVar(k) {",
+                  "    const c = pm.collectionVariables.get(k);",
+                  "    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
+                  "    if (pm.environment && typeof pm.environment.get === 'function') {",
+                  "        const e = pm.environment.get(k);",
+                  "        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
+                  "    }",
+                  "    return '';",
+                  "}",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "const third = getVar('thirdOrderNo');",
+                  "const orderNo = getVar('orderNo');",
+                  "if (!third || !orderNo) {",
+                  "    throw new Error(",
+                  "        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
+                  "        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
+                  "        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
+                  "    );",
+                  "}",
+                  "// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
+                  "const qrId = 'qr-' + third;",
+                  "setVar('thirdOrderNo', third);",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('qrId', qrId);",
+                  "console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\"\n}"
+            },
+            "url": "{{baseUrl}}/order/status",
+            "description": "**Paso 3/3 — Query post-reconciler**\n\nSi el scan ya corrió: `orderStatus \"2\"`.\nSi sigue `\"1\"`, esperá el ticker y re-enviá este request."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "05. Endpoints sueltos (referencia)",
+      "description": "Requests individuales reutilizando las variables de colección actuales.\n**No regeneran IDs.** Usalos solo si ya corrió un Create de algún flujo.",
+      "item": [
+        {
+          "name": "POST /order/qr (sin regenerar IDs)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"objectId\": \"{{objectId}}\",\n  \"subject\": \"{{subject}}\",\n  \"attach\": \"{{attach}}\",\n  \"totalAmount\": \"{{totalAmount}}\",\n  \"notifyUrl\": \"{{notifyUrl}}\"\n}"
+            },
+            "url": "{{baseUrl}}/order/qr",
+            "description": "Idempotente por `orderNo` de GS si la orden ya tiene QR."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /order/status",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\"\n}"
+            },
+            "url": "{{baseUrl}}/order/status",
+            "description": "Pair match orderNo + thirdOrderNo."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function getVar(k) {",
+                  "    const c = pm.collectionVariables.get(k);",
+                  "    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
+                  "    if (pm.environment && typeof pm.environment.get === 'function') {",
+                  "        const e = pm.environment.get(k);",
+                  "        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
+                  "    }",
+                  "    return '';",
+                  "}",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "const third = getVar('thirdOrderNo');",
+                  "const orderNo = getVar('orderNo');",
+                  "if (!third || !orderNo) {",
+                  "    throw new Error(",
+                  "        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
+                  "        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
+                  "        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
+                  "    );",
+                  "}",
+                  "// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
+                  "const qrId = 'qr-' + third;",
+                  "setVar('thirdOrderNo', third);",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('qrId', qrId);",
+                  "console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /order/complete (success)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n  \"success\": true,\n  \"orderStatus\": 2,\n  \"outStockStatus\": 2,\n  \"outStockTime\": \"{{nowTs}}\"\n}"
+            },
+            "url": "{{baseUrl}}/order/complete",
+            "description": "Entrega OK."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function getVar(k) {",
+                  "    const c = pm.collectionVariables.get(k);",
+                  "    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
+                  "    if (pm.environment && typeof pm.environment.get === 'function') {",
+                  "        const e = pm.environment.get(k);",
+                  "        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
+                  "    }",
+                  "    return '';",
+                  "}",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "const third = getVar('thirdOrderNo');",
+                  "const orderNo = getVar('orderNo');",
+                  "if (!third || !orderNo) {",
+                  "    throw new Error(",
+                  "        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
+                  "        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
+                  "        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
+                  "    );",
+                  "}",
+                  "// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
+                  "const qrId = 'qr-' + third;",
+                  "setVar('thirdOrderNo', third);",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('qrId', qrId);",
+                  "console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /order/complete (fail)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n  \"success\": false,\n  \"orderStatus\": 2,\n  \"outStockStatus\": 1\n}"
+            },
+            "url": "{{baseUrl}}/order/complete",
+            "description": "Falla de dispensado → FAILED refundable."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function getVar(k) {",
+                  "    const c = pm.collectionVariables.get(k);",
+                  "    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
+                  "    if (pm.environment && typeof pm.environment.get === 'function') {",
+                  "        const e = pm.environment.get(k);",
+                  "        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
+                  "    }",
+                  "    return '';",
+                  "}",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "const third = getVar('thirdOrderNo');",
+                  "const orderNo = getVar('orderNo');",
+                  "if (!third || !orderNo) {",
+                  "    throw new Error(",
+                  "        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
+                  "        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
+                  "        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
+                  "    );",
+                  "}",
+                  "// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
+                  "const qrId = 'qr-' + third;",
+                  "setVar('thirdOrderNo', third);",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('qrId', qrId);",
+                  "console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /order/cancel",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n  \"orderStatus\": 0,\n  \"remark\": \"user cancel\",\n  \"cancelTime\": \"{{nowTs}}\"\n}"
+            },
+            "url": "{{baseUrl}}/order/cancel",
+            "description": "Cancel."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function getVar(k) {",
+                  "    const c = pm.collectionVariables.get(k);",
+                  "    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
+                  "    if (pm.environment && typeof pm.environment.get === 'function') {",
+                  "        const e = pm.environment.get(k);",
+                  "        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
+                  "    }",
+                  "    return '';",
+                  "}",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "const third = getVar('thirdOrderNo');",
+                  "const orderNo = getVar('orderNo');",
+                  "if (!third || !orderNo) {",
+                  "    throw new Error(",
+                  "        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
+                  "        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
+                  "        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
+                  "    );",
+                  "}",
+                  "// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
+                  "const qrId = 'qr-' + third;",
+                  "setVar('thirdOrderNo', third);",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('qrId', qrId);",
+                  "console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /order/refund",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n  \"refundNo\": \"{{refundNo}}\",\n  \"refundAmount\": \"{{totalAmount}}\",\n  \"refundReason\": \"Falla en espiral\"\n}"
+            },
+            "url": "{{baseUrl}}/order/refund",
+            "description": "Refund async → waiting."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function getVar(k) {",
+                  "    const c = pm.collectionVariables.get(k);",
+                  "    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
+                  "    if (pm.environment && typeof pm.environment.get === 'function') {",
+                  "        const e = pm.environment.get(k);",
+                  "        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
+                  "    }",
+                  "    return '';",
+                  "}",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "const third = getVar('thirdOrderNo');",
+                  "const orderNo = getVar('orderNo');",
+                  "if (!third || !orderNo) {",
+                  "    throw new Error(",
+                  "        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
+                  "        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
+                  "        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
+                  "    );",
+                  "}",
+                  "// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
+                  "const qrId = 'qr-' + third;",
+                  "setVar('thirdOrderNo', third);",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('qrId', qrId);",
+                  "console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /order/refundStatus",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"thirdOrderNo\": \"{{thirdOrderNo}}\",\n  \"refundNo\": \"{{refundNo}}\"\n}"
+            },
+            "url": "{{baseUrl}}/order/refundStatus",
+            "description": "Query refund: pending|success|fail."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function getVar(k) {",
+                  "    const c = pm.collectionVariables.get(k);",
+                  "    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
+                  "    if (pm.environment && typeof pm.environment.get === 'function') {",
+                  "        const e = pm.environment.get(k);",
+                  "        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
+                  "    }",
+                  "    return '';",
+                  "}",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "const third = getVar('thirdOrderNo');",
+                  "const orderNo = getVar('orderNo');",
+                  "if (!third || !orderNo) {",
+                  "    throw new Error(",
+                  "        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
+                  "        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
+                  "        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
+                  "    );",
+                  "}",
+                  "// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
+                  "const qrId = 'qr-' + third;",
+                  "setVar('thirdOrderNo', third);",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('qrId', qrId);",
+                  "console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /webhook/pvs (pago status APPROVED)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"{{thirdOrderNo}}\",\n  \"amount\": {{totalAmount}},\n  \"qrId\": \"{{qrId}}\",\n  \"txeId\": \"txe-mock-{{qrId}}\",\n  \"status\": \"APPROVED\",\n  \"notified_at\": \"2024-10-10T18:00:23Z\",\n  \"payer\": {\n    \"name\": \"TEST PAYER\",\n    \"idType\": \"DNI\",\n    \"idNumber\": \"12345678\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/webhook/pvs?qr.reference={{thirdOrderNo}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhook",
+                "pvs"
+              ],
+              "query": [
+                {
+                  "key": "qr.reference",
+                  "value": "{{thirdOrderNo}}",
+                  "description": "Doc PVS: reference del merchant (nosotros = thirdOrderNo)"
+                }
+              ]
+            },
+            "description": "**Simular callback oficial PVS (pago APPROVED)**\n\nDoc PVS Callback Process:\n- `POST {{HOST}}?qr.reference=...`\n- body: `status` APPROVED|REJECTED (+ reference, amount, qrId, txeId, notified_at, payer)\n\nRequiere `{{qrId}}` y `{{thirdOrderNo}}` del Create.\nDispara `PAYMENT_CONFIRMED` + notify best-effort a `notifyUrl` (`orderStatus \"2\"`)."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function getVar(k) {",
+                  "    const c = pm.collectionVariables.get(k);",
+                  "    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
+                  "    if (pm.environment && typeof pm.environment.get === 'function') {",
+                  "        const e = pm.environment.get(k);",
+                  "        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
+                  "    }",
+                  "    return '';",
+                  "}",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "const third = getVar('thirdOrderNo');",
+                  "const orderNo = getVar('orderNo');",
+                  "if (!third || !orderNo) {",
+                  "    throw new Error(",
+                  "        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
+                  "        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
+                  "        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
+                  "    );",
+                  "}",
+                  "// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
+                  "const qrId = 'qr-' + third;",
+                  "setVar('thirdOrderNo', third);",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('qrId', qrId);",
+                  "console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /webhook/pvs (reverse status REVERSED)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"reference\": \"{{thirdOrderNo}}\",\n  \"amount\": {{totalAmount}},\n  \"qrId\": \"{{qrId}}\",\n  \"txeId\": \"txe-rev-{{qrId}}\",\n  \"status\": \"REVERSED\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/webhook/pvs?qr.reference={{thirdOrderNo}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "webhook",
+                "pvs"
+              ],
+              "query": [
+                {
+                  "key": "qr.reference",
+                  "value": "{{thirdOrderNo}}",
+                  "description": "Doc PVS: reference del merchant (nosotros = thirdOrderNo)"
+                }
+              ]
+            },
+            "description": "**Simular confirmación de reverse (reembolso)**\n\nNota: el callback oficial PVS documenta solo APPROVED|REJECTED.\nPara el flujo de refund local usamos `status: REVERSED` (mapeo interno;\ntambién aceptamos `stateId: 4` por compat). Get QR Status oficial usa `stateId: 4`.\n\nRequiere orden en REFUND_PENDING tras POST /order/refund."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function getVar(k) {",
+                  "    const c = pm.collectionVariables.get(k);",
+                  "    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
+                  "    if (pm.environment && typeof pm.environment.get === 'function') {",
+                  "        const e = pm.environment.get(k);",
+                  "        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
+                  "    }",
+                  "    return '';",
+                  "}",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "const third = getVar('thirdOrderNo');",
+                  "const orderNo = getVar('orderNo');",
+                  "if (!third || !orderNo) {",
+                  "    throw new Error(",
+                  "        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
+                  "        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
+                  "        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
+                  "    );",
+                  "}",
+                  "// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
+                  "const qrId = 'qr-' + third;",
+                  "setVar('thirdOrderNo', third);",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('qrId', qrId);",
+                  "console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST mockPvs admin force status",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"stateId\": 5\n}"
+            },
+            "url": "{{mockPvsUrl}}/admin/transactions/{{qrId}}/status",
+            "description": "Fuerza estado en mock PVS (reconciler)."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function getVar(k) {",
+                  "    const c = pm.collectionVariables.get(k);",
+                  "    if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);",
+                  "    if (pm.environment && typeof pm.environment.get === 'function') {",
+                  "        const e = pm.environment.get(k);",
+                  "        if (e !== undefined && e !== null && String(e).trim() !== '') return String(e);",
+                  "    }",
+                  "    return '';",
+                  "}",
+                  "function setVar(k, v) {",
+                  "    pm.collectionVariables.set(k, v);",
+                  "    if (pm.environment && typeof pm.environment.set === 'function') {",
+                  "        try { pm.environment.set(k, v); } catch (e) {}",
+                  "    }",
+                  "}",
+                  "",
+                  "const third = getVar('thirdOrderNo');",
+                  "const orderNo = getVar('orderNo');",
+                  "if (!third || !orderNo) {",
+                  "    throw new Error(",
+                  "        'Faltan orderNo/thirdOrderNo. Corre primero el paso Create de ESTE flujo. ' +",
+                  "        'collection.thirdOrderNo=' + pm.collectionVariables.get('thirdOrderNo') +",
+                  "        ' env.thirdOrderNo=' + (pm.environment && pm.environment.get ? pm.environment.get('thirdOrderNo') : '')",
+                  "    );",
+                  "}",
+                  "// Siempre reconstruir qrId desde thirdOrderNo (evita qrId stale del Environment)",
+                  "const qrId = 'qr-' + third;",
+                  "setVar('thirdOrderNo', third);",
+                  "setVar('orderNo', orderNo);",
+                  "setVar('qrId', qrId);",
+                  "console.log('IDs activos para este request:', { orderNo, thirdOrderNo: third, qrId });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "06. Propagacion de errores - E_007",
+      "item": [
+        {
+          "name": "1. Create order monto invalido (E_007) -> 400",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const stamp = Date.now();",
+                  "pm.collectionVariables.set('orderNo', `GS-ERR-${stamp}`);",
+                  "pm.collectionVariables.set('thirdOrderNo', '');",
+                  "pm.collectionVariables.set('qrId', '');",
+                  "console.log('Nuevo flujo GS-ERR (test propagacion E_007):', pm.collectionVariables.get('orderNo'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 400 (propagado, no 500)', () => pm.response.to.have.status(400));",
+                  "const body = pm.response.json();",
+                  "pm.test('envelope code 400', () => pm.expect(String(body.code)).to.eql('400'));",
+                  "pm.test('msg contiene E_007', () => pm.expect(body.msg).to.include('E_007'));",
+                  "pm.test('msg contiene \"Monto invalido\"', () => pm.expect(body.msg).to.include('Monto invalido'));",
+                  "console.log('OK - Error PVS propagado al cliente GS:', body.msg);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderNo\": \"{{orderNo}}\",\n  \"objectId\": \"{{objectId}}\",\n  \"subject\": \"{{subject}}\",\n  \"attach\": \"{{attach}}\",\n  \"totalAmount\": \"{{totalAmountSmall}}\",\n  \"notifyUrl\": \"{{notifyUrl}}\"\n}"
+            },
+            "url": "{{baseUrl}}/order/qr",
+            "description": "**Prueba propagacion de errores - E_007**\n\nManda `totalAmount` chico (1.00) que el mockpvs rechaza con 400 E_007 \"Monto invalido\".\n\nRequiere `MOCK_MIN_AMOUNT=10.00` en el mockpvs del sandbox.\n\n- **Antes del fix**: HTTP 500 `{\"code\":400,\"msg\":\"error interno\"}`\n- **Despues del fix**: HTTP 400 `{\"code\":400,\"msg\":\"E_007: Monto invalido\"}`\n\nVerifica que el error de PVS llega claro al cliente GS."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
 }

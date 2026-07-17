@@ -48,6 +48,17 @@ services:
     command: ["./mockpvs"]
     ports:
       - "8081:8081"
+    environment:
+      - MOCK_MIN_AMOUNT=10.00
+
+  mockgs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: powermix_sb_mockgs
+    command: ["./mockgs"]
+    ports:
+      - "8082:8082"
 
   bridge:
     build:
@@ -81,4 +92,6 @@ services:
       migrations:
         condition: service_completed_successfully
       mockpvs:
+        condition: service_started
+      mockgs:
         condition: service_started

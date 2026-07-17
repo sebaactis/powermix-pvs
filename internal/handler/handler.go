@@ -245,7 +245,11 @@ func respondError(w http.ResponseWriter, status int, msg string) {
 }
 
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
+	var pvsBusinessErr *domain.PVSBusinessError
 	switch {
+	case errors.As(err, &pvsBusinessErr):
+		writeGSErr(w, pvsBusinessErr.StatusCode, pvsBusinessErr.Error())
+
 	case errors.Is(err, domain.ErrOrderNotFound),
 		errors.Is(err, domain.ErrRefundNotFound):
 		writeGSErr(w, http.StatusNotFound, err.Error())

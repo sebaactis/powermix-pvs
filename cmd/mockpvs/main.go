@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"sync"
 )
 
@@ -68,6 +70,26 @@ func main() {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
+		}
+
+		// Simula validacion de monto minimo de PVS (configurable via env).
+		// MOCK_MIN_AMOUNT en decimal (ej "10.00"); default "0" = no valida.
+		minAmountStr := os.Getenv("MOCK_MIN_AMOUNT")
+		if minAmountStr == "" {
+			minAmountStr = "0"
+		}
+		if minAmount, err := strconv.ParseFloat(minAmountStr, 64); err == nil && minAmount > 0 {
+			if amount, err := strconv.ParseFloat(req.Amount, 64); err == nil && amount < minAmount {
+				log.Printf("[PVS Mock] Rechazo 400 E_007 amount=%s < min=%s\n", req.Amount, minAmountStr)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"code":    "E_007",
+					"message": "Monto invalido",
+					"ok":      false,
+				})
+				return
+			}
 		}
 
 		qrID := "qr-" + req.ExternalID

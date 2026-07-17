@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/seba/vps-powermix/internal/domain"
 	"github.com/seba/vps-powermix/internal/service"
 )
 
@@ -145,6 +147,31 @@ func TestCreateOrder_Handler(t *testing.T) {
 	raw, _ := json.Marshal(env.Data)
 	if !strings.Contains(string(raw), "base64_qr") {
 		t.Errorf("data no contiene qrUrl: %s", w.Body.String())
+	}
+}
+
+func TestCreateOrder_PVSBusinessError_Propaga4xx(t *testing.T) {
+	h := &Handler{orderSvc: &mockOrderSvc{
+		createErr: fmt.Errorf("generando QR en PVS: %w",
+			&domain.PVSBusinessError{
+				StatusCode: http.StatusBadRequest,
+				Code:       "E_007",
+				Message:    "Monto invalido",
+			}),
+	}, db: &mockDB{}}
+
+	body := `{"orderNo":"GS-1","subject":"x","totalAmount":"1","notifyUrl":"u","objectId":"o","attach":"deviceId=d"}`
+	req := httptest.NewRequest("POST", "/order/qr", strings.NewReader(body))
+	w := httptest.NewRecorder()
+
+	h.Routes().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, esperaba 400", w.Code)
+	}
+	env := decodeEnvelope(t, w.Body.String())
+	if env.Msg != "E_007: Monto invalido" {
+		t.Errorf("msg = %q, esperaba 'E_007: Monto invalido'", env.Msg)
 	}
 }
 
